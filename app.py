@@ -931,6 +931,48 @@ with col_result:
                         st.plotly_chart(fig_h, use_container_width=True)
 
             with tab4:
+                # ── Debug: toon wat get_inkomen teruggeeft ──────────────────
+                if pcs_te_laden:
+                    test_pc = pcs_te_laden[0]
+                    with st.expander(f"🔍 Debug inkomen voor {test_pc}", expanded=True):
+                        try:
+                            # Stap 1: DataProperties
+                            props_test = fetch(f"{INK_BASE}/DataProperties?$format=json")
+                            col_inw_t  = next((p["Key"] for p in props_test if "PerInwoner"          in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
+                            col_med_t  = next((p["Key"] for p in props_test if "Mediaan"             in p["Key"]), None)
+                            st.write(f"✅ DataProperties OK — col_inw: `{col_inw_t}`, col_med: `{col_med_t}`")
+
+                            # Stap 2: Perioden
+                            perioden_t    = fetch(f"{INK_BASE}/Perioden?$format=json")
+                            periode_key_t = perioden_t[-1]["Key"] if perioden_t else None
+                            st.write(f"✅ Periode: `{periode_key_t}`")
+
+                            # Stap 3: RegioS zoeken
+                            regio_items_t = fetch(f"{INK_BASE}/RegioS?$format=json")
+                            st.write(f"✅ RegioS geladen: {len(regio_items_t)} items")
+
+                            regio_key_t = next((r["Key"] for r in regio_items_t if r.get("Title","").strip() == test_pc), None)
+                            st.write(f"Zoek Title=='{test_pc}': `{regio_key_t}`")
+                            if not regio_key_t:
+                                regio_key_t = next((r["Key"] for r in regio_items_t if r.get("Key","").strip() == f"PO{test_pc}"), None)
+                                st.write(f"Zoek Key==PO{test_pc}: `{regio_key_t}`")
+
+                            # Toon eerste 5 RegioS items als voorbeeld
+                            st.write("Eerste 5 RegioS items:")
+                            for item in regio_items_t[:5]:
+                                st.write(f"  Key=`{repr(item['Key'])}` Title=`{repr(item.get('Title',''))}`")
+
+                            # Stap 4: Data ophalen
+                            if regio_key_t and col_inw_t and periode_key_t:
+                                obs_t = fetch(f"{INK_BASE}/TypedDataSet?$format=json"
+                                              f"&$filter=Perioden eq '{periode_key_t}' and RegioS eq '{regio_key_t}'"
+                                              f"&$select={col_inw_t}")
+                                st.write(f"TypedDataSet resultaat: {len(obs_t)} rijen")
+                                if obs_t:
+                                    st.write(f"Data: {obs_t[0]}")
+                        except Exception as e:
+                            st.error(f"Fout: {e}")
+
                 if not ink_res:
                     st.info("Geen inkomensdata beschikbaar voor dit gebied.")
                 else:
