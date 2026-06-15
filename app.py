@@ -386,25 +386,36 @@ PC4_CENTROIDS_FILTERED = {pc: v for pc, v in PC4_CENTROIDS.items() if pc in beke
 
 @st.cache_data(ttl=3600)
 def get_centroids_voor_gebied(center_lat, center_lon, straal_km=15):
-    """Haal via PDOK exacte PC4-centroi den op rondom een locatie."""
+    """
+    Haal via PDOK exacte PC4-centroïden op rondom een locatie.
+    Gebruikt paginering om alle postcodes te vinden, niet alleen de eerste 200.
+    """
     marge = straal_km / 111.0
     extra = {}
-    try:
-        r = requests.get(
-            "https://api.pdok.nl/bzk/locatieserver/search/v3_1/free",
-            params={
-                "q": "*",
-                "fq": [
-                    "type:postcode",
-                    f"centroide_ll:[{center_lat-marge},{center_lon-marge} TO {center_lat+marge},{center_lon+marge}]"
-                ],
-                "fl": "weergavenaam,centroide_ll",
-                "rows": 200,
-            },
-            timeout=10
-        )
-        if r.status_code == 200:
-            for doc in r.json().get("response",{}).get("docs",[]):
+    start = 0
+    while True:
+        try:
+            r = requests.get(
+                "https://api.pdok.nl/bzk/locatieserver/search/v3_1/free",
+                params={
+                    "q": "*",
+                    "fq": [
+                        "type:postcode",
+                        f"centroide_ll:[{center_lat-marge},{center_lon-marge} TO {center_lat+marge},{center_lon+marge}]"
+                    ],
+                    "fl": "weergavenaam,centroide_ll",
+                    "rows": 100,
+                    "start": start,
+                },
+                timeout=10
+            )
+            if r.status_code != 200:
+                break
+            resp = r.json().get("response", {})
+            docs = resp.get("docs", [])
+            if not docs:
+                break
+            for doc in docs:
                 naam = doc.get("weergavenaam","")
                 cent = doc.get("centroide_ll","")
                 m_pc    = re.search(r"\b(\d{4})[A-Z]{2}\b", naam)
@@ -412,9 +423,20 @@ def get_centroids_voor_gebied(center_lat, center_lon, straal_km=15):
                 if m_pc and m_coord:
                     pc4 = m_pc.group(1)
                     if pc4 in bekende_pcs:
-                        extra[pc4] = (float(m_coord.group(2)), float(m_coord.group(1)))
-    except Exception:
-        pass
+                        # Gemiddelde per PC4 (meerdere 6-cijferige postcodes per PC4)
+                        lat_v = float(m_coord.group(2))
+                        lon_v = float(m_coord.group(1))
+                        if pc4 in extra:
+                            # Gemiddelde met bestaande waarde
+                            old_lat, old_lon = extra[pc4]
+                            extra[pc4] = ((old_lat + lat_v)/2, (old_lon + lon_v)/2)
+                        else:
+                            extra[pc4] = (lat_v, lon_v)
+            if start + 100 >= resp.get("numFound", 0):
+                break
+            start += 100
+        except Exception:
+            break
     return extra
 
 # ── Zijbalk ────────────────────────────────────────────────────────────────────
@@ -548,10 +570,13 @@ if analyseer_btn:
         center_lon = g["lon"] if g["type"]=="cirkel" else sum(c[0] for c in g["coords"])/len(g["coords"])
         straal_km  = g["straal"]/1000 if g["type"]=="cirkel" else 10
 
-        with st.spinner("Postcodes in dit gebied ophalen..."):
-            live_centroids = get_centroids_voor_gebied(center_lat, center_lon, max(straal_km*2, 8))
+        # Gebruik ruime zoekradius zodat ook kleine wijken gevonden worden
+        zoek_straal = max(straal_km * 3, 15)
 
-        # Combineer statische + live centroïden (live heeft prioriteit)
+        with st.spinner(f"Postcodes ophalen via PDOK (radius {zoek_straal:.0f} km)..."):
+            live_centroids = get_centroids_voor_gebied(center_lat, center_lon, zoek_straal)
+
+        # Live centroïden hebben prioriteit over statische tabel
         alle_centroids = {**PC4_CENTROIDS_FILTERED, **live_centroids}
 
         if g["type"] == "cirkel":
