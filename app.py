@@ -315,35 +315,7 @@ def get_hk_data(pc_key, periode_key, gb_totaal, gsl_key, hk_map):
     return result
 
 # ── CBS inkomen per postcode ──────────────────────────────────────────────────
-@st.cache_data(ttl=3600)
-def get_inkomen_voor_pc(pc):
-    """
-    Haal inkomenscijfers op voor één postcode.
-    Exacte implementatie zoals de werkende postcode-vergelijker.
-    Laadt RegioS volledig en zoekt op Title — geeft exacte key terug.
-    """
-    props    = fetch(f"{INK_BASE}/DataProperties?$format=json")
-    col_inw  = next((p["Key"] for p in props if "PerInwoner"          in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
-    col_ontv = next((p["Key"] for p in props if "PerInkomensontvanger" in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
-    col_med  = next((p["Key"] for p in props if "Mediaan"             in p["Key"]), None)
-    if not any([col_inw, col_ontv, col_med]):
-        return None, {}
-    perioden    = fetch(f"{INK_BASE}/Perioden?$format=json")
-    periode_key = perioden[-1]["Key"]
-    regio_items = fetch(f"{INK_BASE}/RegioS?$format=json")
-    # Zoek eerst op Title (= de 4-cijferige postcode), dan op Key (PO-prefix)
-    regio_key = next((r["Key"] for r in regio_items if r.get("Title","").strip() == pc), None)
-    if not regio_key:
-        regio_key = next((r["Key"] for r in regio_items if r.get("Key","").strip() == f"PO{pc}"), None)
-    if not regio_key:
-        return None, {}
-    select = ",".join(c for c in [col_inw, col_ontv, col_med] if c)
-    obs = fetch(
-        f"{INK_BASE}/TypedDataSet?$format=json"
-        f"&$filter=Perioden eq '{periode_key}' and RegioS eq '{regio_key}'"
-        f"&$select={select}"
-    )
-    return (obs[0] if obs else None), {"inw": col_inw, "ontv": col_ontv, "med": col_med}
+# inkomen wordt direct in tab4 opgehaald
 
 # ── PDOK geocode (voor zoekfunctie) ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
@@ -733,7 +705,7 @@ with col_result:
             st.info(f"Analyse op {max_pcs} van de {len(pcs_list)} postcodes.")
 
         with st.spinner(f"CBS data ophalen voor {len(pcs_te_laden)} postcodes..."):
-            verdelingen, hh_res, hk_res, ink_res = {}, {}, {}, {}
+            verdelingen, hh_res, hk_res = {}, {}, {}
             prog = st.progress(0)
             for i, pc in enumerate(pcs_te_laden):
                 prog.progress((i+1)/len(pcs_te_laden), text=f"Postcode {pc}...")
@@ -749,8 +721,6 @@ with col_result:
                 if hk_key:
                     d = get_hk_data(hk_key, hk_per_key, gb_totaal, gsl_key, hk_map_meta)
                     if d: hk_res[pc] = d
-                ink_row, ink_cols_map = get_inkomen_voor_pc(pc)
-                if ink_row: ink_res[pc] = (ink_row, ink_cols_map)
 
             # Nederland benchmark — één call per tabel
             nl_leeftijd_key = pc_key_map.get("Nederland")
@@ -938,30 +908,57 @@ with col_result:
                         st.plotly_chart(fig_h, use_container_width=True)
 
             with tab4:
-                if not ink_res:
+                st.subheader("Inkomen")
+
+                @st.cache_data(ttl=3600)
+                def get_inkomen(pc):
+                    props     = fetch(f"{INK_BASE}/DataProperties?$format=json")
+                    col_inw_  = next((p["Key"] for p in props if "PerInwoner"          in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
+                    col_ontv_ = next((p["Key"] for p in props if "PerInkomensontvanger" in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
+                    col_med_  = next((p["Key"] for p in props if "Mediaan"             in p["Key"]), None)
+                    if not any([col_inw_, col_ontv_, col_med_]): return None, {}
+                    perioden_i    = fetch(f"{INK_BASE}/Perioden?$format=json")
+                    periode_key_i = perioden_i[-1]["Key"]
+                    regio_items   = fetch(f"{INK_BASE}/RegioS?$format=json")
+                    regio_key_    = next((r["Key"] for r in regio_items if r.get("Title","").strip() == pc), None)
+                    if not regio_key_:
+                        regio_key_ = next((r["Key"] for r in regio_items if r.get("Key","").strip() == f"PO{pc}"), None)
+                    if not regio_key_: return None, {}
+                    select = ",".join(c for c in [col_inw_, col_ontv_, col_med_] if c)
+                    obs = fetch(f"{INK_BASE}/TypedDataSet?$format=json"
+                                f"&$filter=Perioden eq '{periode_key_i}' and RegioS eq '{regio_key_}'"
+                                f"&$select={select}")
+                    return (obs[0] if obs else None), {"inw": col_inw_, "ontv": col_ontv_, "med": col_med_}
+
+                ink_results = {}
+                prog_ink = st.progress(0, text="Inkomen ophalen...")
+                for i_ink, pc_ink in enumerate(pcs_te_laden):
+                    prog_ink.progress((i_ink+1)/len(pcs_te_laden), text=f"Inkomen {pc_ink}...")
+                    row_i, cols_i = get_inkomen(pc_ink)
+                    if row_i: ink_results[pc_ink] = (row_i, cols_i)
+                prog_ink.empty()
+
+                if not ink_results:
                     st.info("Geen inkomensdata beschikbaar voor dit gebied.")
                 else:
-                    first_row, first_cols_map = next(iter(ink_res.values()))
-                    col_inw  = first_cols_map.get("inw")
-                    col_ontv = first_cols_map.get("ontv")
-                    col_med  = first_cols_map.get("med")
+                    first_row, first_cols = next(iter(ink_results.values()))
+                    col_inw  = first_cols.get("inw")
+                    col_ontv = first_cols.get("ontv")
+                    col_med  = first_cols.get("med")
 
                     def gem_ink(col):
                         if not col: return None
-                        vals = [row.get(col) for row, _ in ink_res.values() if row and row.get(col)]
-                        return round(sum(vals) / len(vals) * 1000) if vals else None
+                        vals = [r.get(col) for r,_ in ink_results.values() if r and r.get(col)]
+                        return round(sum(vals)/len(vals)*1000) if vals else None
 
                     gem_inw  = gem_ink(col_inw)
                     gem_ontv = gem_ink(col_ontv)
                     gem_med  = gem_ink(col_med)
 
-                    # NL benchmark via zelfde functie
-                    nl_row, nl_cols_map = get_inkomen_voor_pc("NL01    ".strip())
-                    if not nl_row:
-                        nl_row, nl_cols_map = get_inkomen_voor_pc("Nederland")
-                    nl_inw  = round(nl_row.get(col_inw,  0) * 1000) if nl_row and col_inw  else None
-                    nl_ontv = round(nl_row.get(col_ontv, 0) * 1000) if nl_row and col_ontv else None
-                    nl_med  = round(nl_row.get(col_med,  0) * 1000) if nl_row and col_med  else None
+                    nl_row, nl_cols = get_inkomen("NL01")
+                    nl_inw  = round(nl_row.get(col_inw,  0)*1000) if nl_row and col_inw  else None
+                    nl_ontv = round(nl_row.get(col_ontv, 0)*1000) if nl_row and col_ontv else None
+                    nl_med  = round(nl_row.get(col_med,  0)*1000) if nl_row and col_med  else None
 
                     c1, c2, c3 = st.columns(3)
                     if gem_inw:
@@ -975,9 +972,9 @@ with col_result:
                                   delta=f"€ {gem_med-nl_med:+,.0f} vs NL".replace(",",".") if nl_med else None)
                     st.caption("Delta t.o.v. landelijk gemiddelde. Gemiddelde over postcodes in het gebied.")
 
-                    if col_inw and len(ink_res) > 1:
-                        ink_plot = [{"Postcode": pc_i, "€": round(row.get(col_inw,0)*1000)}
-                                    for pc_i,(row,_) in ink_res.items() if row and row.get(col_inw)]
+                    if col_inw and len(ink_results) > 1:
+                        ink_plot = [{"Postcode": pc_i, "€": round(r.get(col_inw,0)*1000)}
+                                    for pc_i,(r,_) in ink_results.items() if r and r.get(col_inw)]
                         if ink_plot:
                             ink_plot.sort(key=lambda x: x["€"], reverse=True)
                             fig_ink = px.bar(pd.DataFrame(ink_plot), x="Postcode", y="€",
