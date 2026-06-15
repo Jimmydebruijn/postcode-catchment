@@ -735,10 +735,17 @@ with col_result:
                     tot_hh    = hh_agg.get("__totaal",1) or 1
                     nl_tot_hh = nl_hh.get("__totaal",1) or 1
 
+                    # Gewogen gemiddelde grootte: som(grootte * huishoudens) / totaal huishoudens
+                    gem_grootte_gebied = sum(
+                        d.get("__grootte",0) * d.get("__totaal",0)
+                        for d in hh_res.values() if d.get("__totaal",0) > 0
+                    ) / max(tot_hh, 1)
+                    gem_grootte_nl = nl_hh.get("__grootte", 0)
+
                     c1,c2 = st.columns(2)
                     c1.metric("Huishoudens", f"{int(tot_hh):,}".replace(",","."))
-                    c2.metric("Gem. grootte", f"{hh_agg.get('__grootte',0):.1f} pers.",
-                              delta=f"{hh_agg.get('__grootte',0) - nl_hh.get('__grootte',0):+.1f} vs NL" if nl_hh else None)
+                    c2.metric("Gem. grootte", f"{gem_grootte_gebied:.1f} pers.",
+                              delta=f"{gem_grootte_gebied - gem_grootte_nl:+.1f} vs NL" if nl_hh else None)
 
                     # Alleenstaand vergelijking
                     pc_alone = hh_agg.get("Alleenstaand",0)/tot_hh*100
@@ -777,23 +784,49 @@ with col_result:
                 if not hk_agg:
                     st.info("Geen herkomstdata.")
                 else:
-                    tot_hk = hk_agg.get("Totaal",1) or 1
-                    pct_nl = hk_agg.get("Nederland",0)/tot_hk*100
+                    # NL herkomst benchmark
+                    nl_hk_key = hk_pc_map.get("Nederland")
+                    nl_hk = get_hk_data(nl_hk_key, hk_per_key, gb_totaal, gsl_key, hk_map_meta) if nl_hk_key else {}
+                    nl_tot_hk = nl_hk.get("Totaal",1) or 1
+
+                    tot_hk  = hk_agg.get("Totaal",1) or 1
+                    pct_nl_gebied = hk_agg.get("Nederland",0)/tot_hk*100
+                    pct_nl_nl     = nl_hk.get("Nederland",0)/nl_tot_hk*100 if nl_hk else None
+
                     c1,c2 = st.columns(2)
-                    c1.metric("Herkomst NL",       f"{pct_nl:.1f}%")
-                    c2.metric("Herkomst buiten NL", f"{100-pct_nl:.1f}%")
-                    hk_df = pd.DataFrame([
-                        {"Herkomst": cat, "%": round(hk_agg.get(cat,0)/tot_hk*100,1)}
-                        for cat in HK_CAT if hk_agg.get(cat,0)>0
-                    ])
-                    if not hk_df.empty:
-                        fig_h = px.bar(hk_df, x="%", y="Herkomst", orientation="h",
-                                       color_discrete_sequence=["#534AB7"], height=260)
+                    c1.metric("Herkomst NL", f"{pct_nl_gebied:.1f}%",
+                              delta=f"{pct_nl_gebied - pct_nl_nl:+.1f}%-pt vs NL" if pct_nl_nl else None)
+                    c2.metric("Herkomst buiten NL", f"{100-pct_nl_gebied:.1f}%",
+                              delta=f"{(100-pct_nl_gebied) - (100-pct_nl_nl):+.1f}%-pt vs NL" if pct_nl_nl else None)
+                    st.caption("Delta t.o.v. landelijk gemiddelde")
+
+                    # Vergelijkingsgrafiek gebied vs NL
+                    hk_plot = []
+                    reeksen = ["Gebied"]
+                    kleurmap_hk = {"Gebied": "#534AB7"}
+                    for cat in HK_CAT:
+                        if hk_agg.get(cat,0) > 0:
+                            hk_plot.append({"Herkomst": cat, "%": round(hk_agg.get(cat,0)/tot_hk*100,1), "Reeks": "Gebied"})
+                    if nl_hk:
+                        reeksen.append("⌀ Nederland")
+                        kleurmap_hk["⌀ Nederland"] = "#888780"
+                        for cat in HK_CAT:
+                            if nl_hk.get(cat,0) > 0:
+                                hk_plot.append({"Herkomst": cat, "%": round(nl_hk.get(cat,0)/nl_tot_hk*100,1), "Reeks": "⌀ Nederland"})
+
+                    if hk_plot:
+                        fig_h = px.bar(pd.DataFrame(hk_plot), x="%", y="Herkomst",
+                                       color="Reeks", barmode="group",
+                                       orientation="h",
+                                       color_discrete_map=kleurmap_hk,
+                                       category_orders={"Reeks": reeksen},
+                                       height=300)
                         fig_h.update_layout(
                             plot_bgcolor="white", paper_bgcolor="white",
                             xaxis=dict(showgrid=True, gridcolor="#eee"),
                             yaxis=dict(autorange="reversed"),
-                            margin=dict(t=8, b=30, l=8, r=8), showlegend=False,
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)),
+                            margin=dict(t=30, b=30, l=8, r=8),
                         )
                         st.plotly_chart(fig_h, use_container_width=True)
 
