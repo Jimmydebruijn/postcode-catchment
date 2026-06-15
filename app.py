@@ -847,5 +847,230 @@ with col_result:
                         )
                         st.plotly_chart(fig_h, use_container_width=True)
 
+            # ── Excel export ────────────────────────────────────────────────
+            st.divider()
+            st.subheader("📥 Exporteren")
+
+            if st.button("📊 Download als Excel", type="secondary", use_container_width=True):
+                import io
+                import openpyxl
+                from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+                from openpyxl.utils import get_column_letter
+
+                wb = openpyxl.Workbook()
+
+                # ── Stijlen ──────────────────────────────────────────────────
+                rood   = "C8102E"
+                licht  = "FDECEA"
+                grijs  = "F5F5F5"
+                hdr_font = Font(bold=True, color="FFFFFF", size=11)
+                hdr_fill = PatternFill("solid", fgColor=rood)
+                sub_font = Font(bold=True, size=10)
+                sub_fill = PatternFill("solid", fgColor=licht)
+                thin     = Side(style="thin", color="DDDDDD")
+                border   = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+                def hdr(ws, row, col, val):
+                    c = ws.cell(row=row, column=col, value=val)
+                    c.font = hdr_font
+                    c.fill = hdr_fill
+                    c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                    c.border = border
+                    return c
+
+                def sub(ws, row, col, val):
+                    c = ws.cell(row=row, column=col, value=val)
+                    c.font = sub_font
+                    c.fill = sub_fill
+                    c.alignment = Alignment(horizontal="left", vertical="center")
+                    c.border = border
+                    return c
+
+                def cel(ws, row, col, val, fmt=None):
+                    c = ws.cell(row=row, column=col, value=val)
+                    c.border = border
+                    c.alignment = Alignment(horizontal="left", vertical="center")
+                    if fmt: c.number_format = fmt
+                    return c
+
+                def set_col_width(ws, col, width):
+                    ws.column_dimensions[get_column_letter(col)].width = width
+
+                # ═══════════════════════════════════════════════════════════
+                # Tab 1: Samenvatting
+                # ═══════════════════════════════════════════════════════════
+                ws1 = wb.active
+                ws1.title = "Samenvatting"
+
+                # Bereken samenvattingscijfers
+                tot_inw  = sum(verd_agg.values())
+                gem_lft  = gem_leeftijd_fn(verd_agg)
+                pct_65   = sum(v for k,v in verd_agg.items() if k in ["65-70","70-75","75-80","80-85","85-90","90+"]) / max(tot_inw,1) * 100
+                pct_025  = sum(v for k,v in verd_agg.items() if k in ["0-5","5-10","10-15","15-20","20-25"]) / max(tot_inw,1) * 100
+                tot_hh_v = hh_agg.get("__totaal", 0)
+                gem_grootte_export = sum(
+                    d.get("__grootte",0) * d.get("__totaal",0)
+                    for d in hh_res.values() if d.get("__totaal",0) > 0
+                ) / max(tot_hh_v, 1)
+                pct_alone_v = hh_agg.get("Alleenstaand",0) / max(tot_hh_v,1) * 100
+                pct_gezin_v = hh_agg.get("Gezin met kinderen",0) / max(tot_hh_v,1) * 100
+                pct_stel_v  = hh_agg.get("Stel/meerp. zonder kinderen",0) / max(tot_hh_v,1) * 100
+                tot_hk_v    = hk_agg.get("Totaal",1) or 1
+
+                # Titel
+                ws1.merge_cells("A1:C1")
+                t = ws1["A1"]
+                t.value = f"Catchment Area Analyse — {label}"
+                t.font = Font(bold=True, size=14, color=rood)
+                t.alignment = Alignment(horizontal="left", vertical="center")
+                ws1.row_dimensions[1].height = 28
+
+                ws1.merge_cells("A2:C2")
+                ws1["A2"].value = f"Peiljaar: {periode_title} | Postcodes: {', '.join(pcs_list[:6])}{'…' if len(pcs_list)>6 else ''}"
+                ws1["A2"].font = Font(italic=True, color="777777", size=10)
+                ws1.row_dimensions[2].height = 16
+
+                # Headers
+                r = 4
+                hdr(ws1, r, 1, "Indicator")
+                hdr(ws1, r, 2, "Gebied")
+                hdr(ws1, r, 3, "⌀ Nederland")
+                ws1.row_dimensions[r].height = 22
+
+                # Leeftijd sectie
+                r += 1
+                sub(ws1, r, 1, "👥 LEEFTIJD"); ws1.merge_cells(f"A{r}:C{r}")
+                r += 1; cel(ws1,r,1,"Inwoners");         cel(ws1,r,2,tot_inw,'#,##0')
+                r += 1; cel(ws1,r,1,"Gem. leeftijd");    cel(ws1,r,2,round(gem_lft,1) if gem_lft else "","0.0"); cel(ws1,r,3,42.0,"0.0")
+                r += 1; cel(ws1,r,1,"Aandeel 65+");      cel(ws1,r,2,round(pct_65,1),"0.0"%""); cel(ws1,r,3,19.6,"0.0"%"")
+                r += 1; cel(ws1,r,1,"Aandeel 0-25");     cel(ws1,r,2,round(pct_025,1),"0.0"%""); cel(ws1,r,3,27.5,"0.0"%"")
+
+                # Leeftijdsverdeling per groep
+                r += 1
+                sub(ws1, r, 1, "Leeftijdsverdeling (%)"); ws1.merge_cells(f"A{r}:C{r}")
+                lft_pct = pct(verd_agg)
+                for lbl_l in LABELS_VOLGORDE:
+                    r += 1
+                    cel(ws1,r,1,lbl_l)
+                    cel(ws1,r,2,round(lft_pct.get(lbl_l,0),1),"0.0"%"")
+
+                # Huishoudens sectie
+                r += 1
+                sub(ws1, r, 1, "🏠 HUISHOUDENS"); ws1.merge_cells(f"A{r}:C{r}")
+                r += 1; cel(ws1,r,1,"Totaal huishoudens"); cel(ws1,r,2,tot_hh_v,'#,##0')
+                r += 1; cel(ws1,r,1,"Gem. grootte");       cel(ws1,r,2,round(gem_grootte_export,2),"0.00"); cel(ws1,r,3,2.17,"0.00")
+                r += 1; cel(ws1,r,1,"Alleenstaand");       cel(ws1,r,2,round(pct_alone_v,1),"0.0"%""); cel(ws1,r,3,40.3,"0.0"%"")
+                r += 1; cel(ws1,r,1,"Gezin met kinderen"); cel(ws1,r,2,round(pct_gezin_v,1),"0.0"%""); cel(ws1,r,3,31.5,"0.0"%"")
+                r += 1; cel(ws1,r,1,"Stel/meerp. z. kind"); cel(ws1,r,2,round(pct_stel_v,1),"0.0"%""); cel(ws1,r,3,28.2,"0.0"%"")
+
+                # Herkomst sectie
+                r += 1
+                sub(ws1, r, 1, "🌍 HERKOMST"); ws1.merge_cells(f"A{r}:C{r}")
+                for cat in HK_CAT:
+                    r += 1
+                    cel(ws1,r,1,cat)
+                    cel(ws1,r,2,round(hk_agg.get(cat,0)/tot_hk_v*100,1),"0.0"%"")
+
+                set_col_width(ws1, 1, 30)
+                set_col_width(ws1, 2, 18)
+                set_col_width(ws1, 3, 18)
+
+                # ═══════════════════════════════════════════════════════════
+                # Tab 2: Postcodes
+                # ═══════════════════════════════════════════════════════════
+                ws2 = wb.create_sheet("Postcodes")
+
+                hdrs2 = ["Postcode","Inwoners","Gem. leeftijd",
+                         "Aandeel 65+%","Aandeel 0-25%",
+                         "Huishoudens","Gem. grootte",
+                         "Alleenstaand%","Gezin m. kind%","Stel z. kind%",
+                         "Herkomst NL%","Buiten Europa%"]
+                for ci, h in enumerate(hdrs2, 1):
+                    hdr(ws2, 1, ci, h)
+                    ws2.row_dimensions[1].height = 34
+
+                for ri, pc in enumerate(pcs_te_laden, 2):
+                    vd = verdelingen.get(pc, {})
+                    hd = hh_res.get(pc, {})
+                    hk = hk_res.get(pc, {})
+                    tot_p = sum(vd.values()) or 1
+                    gem_l = gem_leeftijd_fn(vd)
+                    p65   = sum(v for k,v in vd.items() if k in ["65-70","70-75","75-80","80-85","85-90","90+"])/tot_p*100
+                    p025  = sum(v for k,v in vd.items() if k in ["0-5","5-10","10-15","15-20","20-25"])/tot_p*100
+                    hh_t  = hd.get("__totaal",0)
+                    hh_g  = hd.get("__grootte",0)
+                    al    = hd.get("Alleenstaand",0)/max(hh_t,1)*100
+                    gez   = hd.get("Gezin met kinderen",0)/max(hh_t,1)*100
+                    st_   = hd.get("Stel/meerp. zonder kinderen",0)/max(hh_t,1)*100
+                    hk_t  = hk.get("Totaal",1) or 1
+                    nl_p  = hk.get("Nederland",0)/hk_t*100
+                    bu_p  = hk.get("Buiten Europa",0)/hk_t*100
+
+                    row_data = [pc, tot_p, round(gem_l,1) if gem_l else "",
+                                round(p65,1), round(p025,1),
+                                hh_t, round(hh_g,2),
+                                round(al,1), round(gez,1), round(st_,1),
+                                round(nl_p,1), round(bu_p,1)]
+                    for ci, val in enumerate(row_data, 1):
+                        c = ws2.cell(row=ri, column=ci, value=val)
+                        c.border = border
+                        c.alignment = Alignment(horizontal="center" if ci>1 else "left", vertical="center")
+                        if ri % 2 == 0:
+                            c.fill = PatternFill("solid", fgColor=grijs)
+
+                for ci, w in enumerate([12,12,14,12,12,14,12,12,12,12,12,12], 1):
+                    set_col_width(ws2, ci, w)
+
+                # ═══════════════════════════════════════════════════════════
+                # Tab 3: Winkels in gebied
+                # ═══════════════════════════════════════════════════════════
+                ws3 = wb.create_sheet("Winkels in gebied")
+
+                # Bepaal welke winkels in het getekende gebied liggen
+                g = st.session_state.gebied
+                winkels_in_gebied = []
+                if g:
+                    for w in WINKELS:
+                        if g["type"] == "cirkel":
+                            if haversine(g["lat"], g["lon"], w["lat"], w["lon"]) <= g["straal"]:
+                                winkels_in_gebied.append(w)
+                        elif g["type"] == "polygoon":
+                            if punt_in_polygoon(w["lat"], w["lon"], g["coords"]):
+                                winkels_in_gebied.append(w)
+
+                hdrs3 = ["Store number","Stad","Adres","Postcode","Latitude","Longitude"]
+                for ci, h in enumerate(hdrs3, 1):
+                    hdr(ws3, 1, ci, h)
+                    ws3.row_dimensions[1].height = 22
+
+                for ri, w in enumerate(winkels_in_gebied, 2):
+                    row3 = [w["s"], w["c"], w["a"], w["p"], w["lat"], w["lon"]]
+                    for ci, val in enumerate(row3, 1):
+                        c = ws3.cell(row=ri, column=ci, value=val)
+                        c.border = border
+                        c.alignment = Alignment(horizontal="center" if ci not in [2,3] else "left", vertical="center")
+                        if ri % 2 == 0:
+                            c.fill = PatternFill("solid", fgColor=grijs)
+
+                ws3.cell(row=max(len(winkels_in_gebied)+3,3), column=1,
+                         value=f"Totaal: {len(winkels_in_gebied)} winkels in dit gebied").font = Font(bold=True)
+
+                for ci, w in enumerate([14,20,32,12,12,12], 1):
+                    set_col_width(ws3, ci, w)
+
+                # ── Opslaan en downloaden ────────────────────────────────────
+                buf = io.BytesIO()
+                wb.save(buf)
+                buf.seek(0)
+
+                bestandsnaam = f"catchment_{label.replace(' ','_').replace('/','').replace('⌀','').replace(',','')}.xlsx"
+                st.download_button(
+                    label="⬇️ Download Excel",
+                    data=buf.getvalue(),
+                    file_name=bestandsnaam,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+
 st.divider()
 st.caption("Data: CBS StatLine (CC BY 4.0) | Geodata: PDOK | App gebouwd met Streamlit")
