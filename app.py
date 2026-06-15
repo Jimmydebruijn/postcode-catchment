@@ -155,28 +155,17 @@ _ANCHORS = {
     70:(52.00,6.20), 71:(52.17,6.15), 72:(52.22,6.18), 73:(52.22,6.90),
     74:(52.22,6.22), 75:(52.22,6.90), 76:(52.52,6.10), 77:(52.52,6.11),
     78:(52.50,6.10), 79:(52.50,6.48), 80:(52.52,6.10), 81:(52.50,6.09),
-    82:(52.52,5.47), 83:(52.30,5.55), 84:(52.17,5.40), 85:(52.07,5.12),
-    86:(52.08,5.12), 87:(52.20,5.45), 88:(52.22,5.50), 89:(52.10,5.12),
+    82:(52.52,5.47), 83:(52.30,5.55), 84:(52.15,5.38), 85:(52.08,5.12),
+    86:(52.08,5.11), 87:(52.15,5.37), 88:(53.10,5.80), 89:(52.10,5.12),
     90:(53.22,6.57), 91:(53.22,6.57), 92:(52.75,6.92), 93:(52.85,6.35),
     94:(52.87,6.55), 95:(53.10,6.88), 96:(53.32,6.30), 97:(53.20,5.75),
     98:(53.20,5.72), 99:(52.93,5.85),
 }
 
 def _build_centroids():
-    c = dict(_EXACTE_CENTROIDS)  # begin met exacte data
-    for pc_int in range(1000, 10000):
-        pc = str(pc_int)
-        if pc in c:
-            continue  # al exact bekend
-        prefix = int(pc[:2])
-        if prefix in _ANCHORS:
-            base_lat, base_lon = _ANCHORS[prefix]
-            suffix = int(pc[2:])
-            c[pc] = (
-                round(base_lat + (suffix // 10 - 5) * 0.003, 4),
-                round(base_lon + (suffix %  10 - 5) * 0.004, 4),
-            )
-    return c
+    # Gebruik alleen de exacte centroïden - geen grove schattingen
+    # Onbekende postcodes worden live opgehaald via PDOK bij analyse
+    return dict(_EXACTE_CENTROIDS)
 
 PC4_CENTROIDS = _build_centroids()
 
@@ -577,7 +566,13 @@ if analyseer_btn:
             live_centroids = get_centroids_voor_gebied(center_lat, center_lon, zoek_straal)
 
         # Live centroïden hebben prioriteit over statische tabel
-        alle_centroids = {**PC4_CENTROIDS_FILTERED, **live_centroids}
+        # Valideer: alleen Nederlandse coördinaten (filter foute statische centroïden)
+        alle_centroids = {}
+        for pc, (lat, lon) in PC4_CENTROIDS_FILTERED.items():
+            if 50.7 <= lat <= 53.6 and 3.3 <= lon <= 7.3:
+                alle_centroids[pc] = (lat, lon)
+        # Live centroïden overschrijven altijd (zijn preciezer)
+        alle_centroids.update(live_centroids)
 
         if g["type"] == "cirkel":
             gevonden = [
@@ -585,7 +580,7 @@ if analyseer_btn:
                 for pc, (lat, lon) in alle_centroids.items()
                 if haversine(g["lat"], g["lon"], lat, lon) <= g["straal"]
             ]
-            st.session_state.gebied_label = f"Cirkel ⌀ {g['straal']*2/1000:.1f} km"
+            st.session_state.gebied_label = f"Cirkel — straal {g['straal']/1000:.1f} km"
         else:
             gevonden = [
                 (pc, lat, lon)
