@@ -316,19 +316,34 @@ def get_hk_data(pc_key, periode_key, gb_totaal, gsl_key, hk_map):
 
 # ── CBS inkomen per postcode ──────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
-def get_ink_meta():
-    props     = fetch(f"{INK_BASE}/DataProperties?$format=json")
-    col_inw   = next((p["Key"] for p in props if "PerInwoner"          in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
-    col_ontv  = next((p["Key"] for p in props if "PerInkomensontvanger" in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
-    col_med   = next((p["Key"] for p in props if "Mediaan"             in p["Key"]), None)
-    perioden  = fetch(f"{INK_BASE}/Perioden?$format=json")
-    per_key   = perioden[-1]["Key"]
-    return per_key, col_inw, col_ontv, col_med
+def get_ink_cols_en_periode():
+    """Haal kolomnamen en meest recente periode op — eenmalig gecached."""
+    props         = fetch(f"{INK_BASE}/DataProperties?$format=json")
+    col_inw       = next((p["Key"] for p in props if "PerInwoner"           in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
+    col_ontv      = next((p["Key"] for p in props if "PerInkomensontvanger"  in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
+    col_med       = next((p["Key"] for p in props if "Mediaan"              in p["Key"]), None)
+    perioden      = fetch(f"{INK_BASE}/Perioden?$format=json")
+    per_key       = perioden[-1]["Key"]
+    regio_items   = fetch(f"{INK_BASE}/RegioS?$format=json")
+    # Bouw lookup: postcode (4-cijferig) -> RegioS key
+    pc_to_regio   = {}
+    for r in regio_items:
+        k = r.get("Key","").strip()
+        t = r.get("Title","").strip()
+        if k.startswith("PO") and len(k) == 6:
+            pc_to_regio[k[2:]] = k
+        elif t.isdigit() and len(t) == 4:
+            pc_to_regio[t] = k
+    # NL totaal key
+    nl_key = next((r["Key"] for r in regio_items if "Nederland" in r.get("Title","")), None)
+    return per_key, col_inw, col_ontv, col_med, pc_to_regio, nl_key
 
 @st.cache_data(ttl=3600)
-def get_ink_data(pc, per_key, col_inw, col_ontv, col_med):
-    # 85064NED gebruikt PO + 4-cijferige postcode als RegioS key
-    regio_key = f"PO{pc}"
+def get_ink_data(pc, per_key, col_inw, col_ontv, col_med, pc_to_regio):
+    regio_key = pc_to_regio.get(pc)
+    if not regio_key:
+        # Fallback: probeer PO-prefix direct
+        regio_key = f"PO{pc}"
     select = ",".join(c for c in [col_inw, col_ontv, col_med] if c)
     if not select:
         return None
@@ -400,7 +415,7 @@ with st.spinner("Metadata laden..."):
     periode_key, periode_title, leeftijd_map, leeftijd_keys, geslacht_key, pc_key_map = get_leeftijd_meta()
     hh_per_key, hh_map_meta, hh_pc_map = get_hh_meta()
     hk_per_key, hk_map_meta, gb_totaal, gsl_key, hk_pc_map = get_hk_meta()
-    ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med = get_ink_meta()
+    ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med, ink_pc_to_regio, ink_nl_key = get_ink_cols_en_periode()
 
 # Filter PC4_CENTROIDS op alleen bekende CBS-postcodes
 bekende_pcs = set(pc_key_map.keys())
@@ -744,7 +759,7 @@ with col_result:
                 if hk_key:
                     d = get_hk_data(hk_key, hk_per_key, gb_totaal, gsl_key, hk_map_meta)
                     if d: hk_res[pc] = d
-                ink_row = get_ink_data(pc, ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med)
+                ink_row = get_ink_data(pc, ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med, ink_pc_to_regio)
                 if ink_row: ink_res[pc] = ink_row
 
             # Nederland benchmark — één call per tabel
@@ -946,7 +961,7 @@ with col_result:
                     gem_med  = gem_ink(ink_col_med)  if ink_col_med  else None
 
                     # NL benchmark via aparte call
-                    nl_ink = get_ink_data("NL01    ", ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med)
+                    nl_ink = get_ink_data(ink_nl_key.strip() if ink_nl_key else "NL01", ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med, ink_pc_to_regio) if ink_nl_key else None
                     nl_inw  = round(nl_ink.get(ink_col_inw,  0) * 1000) if nl_ink and ink_col_inw  else None
                     nl_ontv = round(nl_ink.get(ink_col_ontv, 0) * 1000) if nl_ink and ink_col_ontv else None
                     nl_med  = round(nl_ink.get(ink_col_med,  0) * 1000) if nl_ink and ink_col_med  else None
