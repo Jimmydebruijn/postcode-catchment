@@ -319,23 +319,43 @@ def get_hk_data(pc_key, periode_key, gb_totaal, gsl_key, hk_map):
 
 # ── CBS inkomen ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
+def get_inkomen_meta():
+    """Haal kolomnamen en periode eenmalig op."""
+    props    = fetch(f"{INK_BASE}/DataProperties?$format=json")
+    # Zoek alle inkomenskolommen — gebruik ruimere zoektermen
+    col_inw  = next((p["Key"] for p in props if "PerInwoner"           in p["Key"]), None)
+    col_ontv = next((p["Key"] for p in props if "PerInkomensontvanger"  in p["Key"]), None)
+    col_med  = next((p["Key"] for p in props if "Mediaan"              in p["Key"]), None)
+    perioden    = fetch(f"{INK_BASE}/Perioden?$format=json")
+    periode_key = perioden[-1]["Key"]
+    return periode_key, col_inw, col_ontv, col_med
+
+@st.cache_data(ttl=3600)
 def get_inkomen(pc):
-    props         = fetch(f"{INK_BASE}/DataProperties?$format=json")
-    col_inw       = next((p["Key"] for p in props if "PerInwoner"          in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
-    col_ontv      = next((p["Key"] for p in props if "PerInkomensontvanger" in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
-    col_med       = next((p["Key"] for p in props if "Mediaan"             in p["Key"]), None)
-    if not any([col_inw, col_ontv, col_med]): return None, {}
-    perioden_i    = fetch(f"{INK_BASE}/Perioden?$format=json")
-    periode_key_i = perioden_i[-1]["Key"]
-    regio_items   = fetch(f"{INK_BASE}/RegioS?$format=json")
-    regio_key     = next((r["Key"] for r in regio_items if r.get("Title","").strip() == pc), None)
-    if not regio_key:
-        regio_key = next((r["Key"] for r in regio_items if r.get("Key","").strip() == f"PO{pc}"), None)
-    if not regio_key: return None, {}
+    """Haal inkomen op voor één postcode via directe TypedDataSet query."""
+    periode_key, col_inw, col_ontv, col_med = get_inkomen_meta()
+    if not any([col_inw, col_ontv, col_med]):
+        return None, {}
     select = ",".join(c for c in [col_inw, col_ontv, col_med] if c)
-    obs = fetch(f"{INK_BASE}/TypedDataSet?$format=json"
-                f"&$filter=Perioden eq '{periode_key_i}' and RegioS eq '{regio_key}'"
-                f"&$select={select}")
+    # Zoek de RegioS key direct via filter op de postcode Title
+    regio_items = fetch(
+        f"{INK_BASE}/RegioS?$format=json"
+        f"&$filter=Title eq '{pc}'"
+    )
+    if not regio_items:
+        # Fallback: filter op Key
+        regio_items = fetch(
+            f"{INK_BASE}/RegioS?$format=json"
+            f"&$filter=substringof('{pc}',Key)"
+        )
+    if not regio_items:
+        return None, {}
+    regio_key = regio_items[0]["Key"]
+    obs = fetch(
+        f"{INK_BASE}/TypedDataSet?$format=json"
+        f"&$filter=Perioden eq '{periode_key}' and RegioS eq '{regio_key}'"
+        f"&$select={select}"
+    )
     return (obs[0] if obs else None), {"inw": col_inw, "ontv": col_ontv, "med": col_med}
 
 # ── PDOK geocode (voor zoekfunctie) ───────────────────────────────────────────
@@ -947,20 +967,16 @@ with col_result:
                             periode_key_t = perioden_t[-1]["Key"] if perioden_t else None
                             st.write(f"✅ Periode: `{periode_key_t}`")
 
-                            # Stap 3: RegioS zoeken
-                            regio_items_t = fetch(f"{INK_BASE}/RegioS?$format=json")
-                            st.write(f"✅ RegioS geladen: {len(regio_items_t)} items")
-
-                            regio_key_t = next((r["Key"] for r in regio_items_t if r.get("Title","").strip() == test_pc), None)
-                            st.write(f"Zoek Title=='{test_pc}': `{regio_key_t}`")
-                            if not regio_key_t:
-                                regio_key_t = next((r["Key"] for r in regio_items_t if r.get("Key","").strip() == f"PO{test_pc}"), None)
-                                st.write(f"Zoek Key==PO{test_pc}: `{regio_key_t}`")
-
-                            # Toon eerste 5 RegioS items als voorbeeld
-                            st.write("Eerste 5 RegioS items:")
-                            for item in regio_items_t[:5]:
-                                st.write(f"  Key=`{repr(item['Key'])}` Title=`{repr(item.get('Title',''))}`")
+                            # Stap 3: RegioS direct filteren op postcode
+                            regio_direct = fetch(f"{INK_BASE}/RegioS?$format=json&$filter=Title eq '{test_pc}'")
+                            st.write(f"RegioS filter Title=='{test_pc}': {len(regio_direct)} items")
+                            if regio_direct:
+                                for item in regio_direct:
+                                    st.write(f"  Key=`{repr(item['Key'])}` Title=`{repr(item.get('Title',''))}`")
+                                regio_key_t = regio_direct[0]["Key"]
+                            else:
+                                regio_key_t = None
+                                st.warning("Geen RegioS gevonden voor deze postcode")
 
                             # Stap 4: Data ophalen
                             if regio_key_t and col_inw_t and periode_key_t:
