@@ -384,6 +384,39 @@ with st.spinner("Metadata laden..."):
 bekende_pcs = set(pc_key_map.keys())
 PC4_CENTROIDS_FILTERED = {pc: v for pc, v in PC4_CENTROIDS.items() if pc in bekende_pcs}
 
+@st.cache_data(ttl=3600)
+def get_centroids_voor_gebied(center_lat, center_lon, straal_km=15):
+    """Haal via PDOK exacte PC4-centroi den op rondom een locatie."""
+    marge = straal_km / 111.0
+    extra = {}
+    try:
+        r = requests.get(
+            "https://api.pdok.nl/bzk/locatieserver/search/v3_1/free",
+            params={
+                "q": "*",
+                "fq": [
+                    "type:postcode",
+                    f"centroide_ll:[{center_lat-marge},{center_lon-marge} TO {center_lat+marge},{center_lon+marge}]"
+                ],
+                "fl": "weergavenaam,centroide_ll",
+                "rows": 200,
+            },
+            timeout=10
+        )
+        if r.status_code == 200:
+            for doc in r.json().get("response",{}).get("docs",[]):
+                naam = doc.get("weergavenaam","")
+                cent = doc.get("centroide_ll","")
+                m_pc    = re.search(r"\b(\d{4})[A-Z]{2}\b", naam)
+                m_coord = re.search(r"POINT\(([0-9.]+)\s+([0-9.]+)\)", cent)
+                if m_pc and m_coord:
+                    pc4 = m_pc.group(1)
+                    if pc4 in bekende_pcs:
+                        extra[pc4] = (float(m_coord.group(2)), float(m_coord.group(1)))
+    except Exception:
+        pass
+    return extra
+
 # ── Zijbalk ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("📍 Locatie zoeken")
@@ -510,23 +543,34 @@ if analyseer_btn:
     else:
         g = st.session_state.gebied
 
+        # Haal dynamische centroïden op rondom het getekende gebied
+        center_lat = g["lat"] if g["type"]=="cirkel" else sum(c[1] for c in g["coords"])/len(g["coords"])
+        center_lon = g["lon"] if g["type"]=="cirkel" else sum(c[0] for c in g["coords"])/len(g["coords"])
+        straal_km  = g["straal"]/1000 if g["type"]=="cirkel" else 10
+
+        with st.spinner("Postcodes in dit gebied ophalen..."):
+            live_centroids = get_centroids_voor_gebied(center_lat, center_lon, max(straal_km*2, 8))
+
+        # Combineer statische + live centroïden (live heeft prioriteit)
+        alle_centroids = {**PC4_CENTROIDS_FILTERED, **live_centroids}
+
         if g["type"] == "cirkel":
             gevonden = [
                 (pc, lat, lon)
-                for pc, (lat, lon) in PC4_CENTROIDS_FILTERED.items()
+                for pc, (lat, lon) in alle_centroids.items()
                 if haversine(g["lat"], g["lon"], lat, lon) <= g["straal"]
             ]
             st.session_state.gebied_label = f"Cirkel ⌀ {g['straal']*2/1000:.1f} km"
         else:
             gevonden = [
                 (pc, lat, lon)
-                for pc, (lat, lon) in PC4_CENTROIDS_FILTERED.items()
+                for pc, (lat, lon) in alle_centroids.items()
                 if punt_in_polygoon(lat, lon, g["coords"])
             ]
             st.session_state.gebied_label = "Getekend gebied"
 
         if not gevonden:
-            st.warning("Geen postcodes gevonden in dit gebied. Zoom verder in en teken een kleiner gebied.")
+            st.warning("Geen postcodes gevonden. Controleer of het gebied in Nederland ligt en probeer een groter gebied.")
         else:
             st.session_state.gevonden_pcs  = sorted(gevonden, key=lambda x: x[0])
             st.session_state.analyse_klaar = True
