@@ -20,7 +20,8 @@ st.caption("Teken een cirkel of polygoon • Alle postcodes binnen het gebied wo
 
 BASE    = "https://opendata.cbs.nl/ODataApi/OData/83502NED"
 HH_BASE = "https://opendata.cbs.nl/ODataApi/OData/83505NED"
-HK_BASE = "https://opendata.cbs.nl/ODataApi/OData/85640NED"
+HK_BASE  = "https://opendata.cbs.nl/ODataApi/OData/85640NED"
+INK_BASE = "https://opendata.cbs.nl/ODataApi/OData/85064NED"
 
 # ── Statische PC4 centroïden ───────────────────────────────────────────────────
 # Exacte centroïden voor alle bekende Nederlandse PC4-gebieden
@@ -313,6 +314,42 @@ def get_hk_data(pc_key, periode_key, gb_totaal, gsl_key, hk_map):
             result[HK_GEWENST[titel]] = row.get("Bevolking_1") or 0
     return result
 
+# ── CBS inkomen per postcode ──────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def get_ink_meta():
+    props     = fetch(f"{INK_BASE}/DataProperties?$format=json")
+    col_inw   = next((p["Key"] for p in props if "PerInwoner"          in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
+    col_ontv  = next((p["Key"] for p in props if "PerInkomensontvanger" in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
+    col_med   = next((p["Key"] for p in props if "Mediaan"             in p["Key"]), None)
+    perioden  = fetch(f"{INK_BASE}/Perioden?$format=json")
+    per_key   = perioden[-1]["Key"]
+    regio_items = fetch(f"{INK_BASE}/RegioS?$format=json")
+    pc_map    = {}
+    for r in regio_items:
+        key  = r.get("Key","").strip()
+        titel= r.get("Title","").strip()
+        # RegioS heeft PO-prefix voor postcodes, bijv. PO1011
+        if key.startswith("PO"):
+            pc_map[key[2:]] = key
+        else:
+            pc_map[titel] = key
+    return per_key, col_inw, col_ontv, col_med, pc_map
+
+@st.cache_data(ttl=3600)
+def get_ink_data(pc, per_key, col_inw, col_ontv, col_med, pc_map):
+    regio_key = pc_map.get(pc)
+    if not regio_key:
+        return None
+    select = ",".join(c for c in [col_inw, col_ontv, col_med] if c)
+    if not select:
+        return None
+    obs = fetch(
+        f"{INK_BASE}/TypedDataSet?$format=json"
+        f"&$filter=Perioden eq '{per_key}' and RegioS eq '{regio_key}'"
+        f"&$select={select}"
+    )
+    return obs[0] if obs else None
+
 # ── PDOK geocode (voor zoekfunctie) ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def geocode(zoekterm):
@@ -374,6 +411,7 @@ with st.spinner("Metadata laden..."):
     periode_key, periode_title, leeftijd_map, leeftijd_keys, geslacht_key, pc_key_map = get_leeftijd_meta()
     hh_per_key, hh_map_meta, hh_pc_map = get_hh_meta()
     hk_per_key, hk_map_meta, gb_totaal, gsl_key, hk_pc_map = get_hk_meta()
+    ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med, ink_pc_map = get_ink_meta()
 
 # Filter PC4_CENTROIDS op alleen bekende CBS-postcodes
 bekende_pcs = set(pc_key_map.keys())
@@ -701,7 +739,7 @@ with col_result:
             st.info(f"Analyse op {max_pcs} van de {len(pcs_list)} postcodes.")
 
         with st.spinner(f"CBS data ophalen voor {len(pcs_te_laden)} postcodes..."):
-            verdelingen, hh_res, hk_res = {}, {}, {}
+            verdelingen, hh_res, hk_res, ink_res = {}, {}, {}, {}
             prog = st.progress(0)
             for i, pc in enumerate(pcs_te_laden):
                 prog.progress((i+1)/len(pcs_te_laden), text=f"Postcode {pc}...")
@@ -717,6 +755,8 @@ with col_result:
                 if hk_key:
                     d = get_hk_data(hk_key, hk_per_key, gb_totaal, gsl_key, hk_map_meta)
                     if d: hk_res[pc] = d
+                ink_row = get_ink_data(pc, ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med, ink_pc_map)
+                if ink_row: ink_res[pc] = ink_row
 
             # Nederland benchmark — één call per tabel
             nl_leeftijd_key = pc_key_map.get("Nederland")
@@ -732,7 +772,7 @@ with col_result:
             hh_agg   = combineer(list(hh_res.values()))
             hk_agg   = combineer(list(hk_res.values()))
 
-            tab1, tab2, tab3 = st.tabs(["👥 Leeftijd", "🏠 Huishoudens", "🌍 Herkomst"])
+            tab1, tab2, tab3, tab4 = st.tabs(["👥 Leeftijd", "🏠 Huishoudens", "🌍 Herkomst", "💶 Inkomen"])
 
             with tab1:
                 tot  = sum(verd_agg.values())
@@ -902,6 +942,64 @@ with col_result:
                             margin=dict(t=30, b=30, l=8, r=8),
                         )
                         st.plotly_chart(fig_h, use_container_width=True)
+
+            with tab4:
+                if not ink_res:
+                    st.info("Geen inkomensdata beschikbaar voor dit gebied.")
+                else:
+                    # Bereken gewogen gemiddelden over alle postcodes
+                    def gem_ink(col):
+                        vals = [r.get(col) for r in ink_res.values() if r.get(col)]
+                        return round(sum(vals) / len(vals) * 1000) if vals else None
+
+                    gem_inw  = gem_ink(ink_col_inw)  if ink_col_inw  else None
+                    gem_ontv = gem_ink(ink_col_ontv) if ink_col_ontv else None
+                    gem_med  = gem_ink(ink_col_med)  if ink_col_med  else None
+
+                    # NL benchmark via aparte call
+                    nl_ink = get_ink_data("Nederland", ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med, ink_pc_map)
+                    nl_inw  = round(nl_ink.get(ink_col_inw,  0) * 1000) if nl_ink and ink_col_inw  else None
+                    nl_ontv = round(nl_ink.get(ink_col_ontv, 0) * 1000) if nl_ink and ink_col_ontv else None
+                    nl_med  = round(nl_ink.get(ink_col_med,  0) * 1000) if nl_ink and ink_col_med  else None
+
+                    c1, c2, c3 = st.columns(3)
+                    if gem_inw:
+                        delta_inw = f"€ {gem_inw - nl_inw:+,.0f} vs NL".replace(",",".") if nl_inw else None
+                        c1.metric("Gem. per inwoner", f"€ {gem_inw:,}".replace(",","."), delta=delta_inw)
+                    if gem_ontv:
+                        delta_ontv = f"€ {gem_ontv - nl_ontv:+,.0f} vs NL".replace(",",".") if nl_ontv else None
+                        c2.metric("Gem. per ontvanger", f"€ {gem_ontv:,}".replace(",","."), delta=delta_ontv)
+                    if gem_med:
+                        delta_med = f"€ {gem_med - nl_med:+,.0f} vs NL".replace(",",".") if nl_med else None
+                        c3.metric("Mediaan inkomen", f"€ {gem_med:,}".replace(",","."), delta=delta_med)
+                    st.caption("Delta t.o.v. landelijk gemiddelde. Gemiddelde over postcodes in het gebied.")
+
+                    # Staafgrafiek per postcode
+                    if ink_col_inw and len(ink_res) > 1:
+                        ink_plot = []
+                        for pc, row in ink_res.items():
+                            val = row.get(ink_col_inw)
+                            if val:
+                                ink_plot.append({"Postcode": pc, "Gem. inkomen per inwoner (€)": round(val * 1000)})
+                        if ink_plot:
+                            ink_plot.sort(key=lambda x: x["Gem. inkomen per inwoner (€)"], reverse=True)
+                            fig_ink = px.bar(
+                                pd.DataFrame(ink_plot),
+                                x="Postcode", y="Gem. inkomen per inwoner (€)",
+                                color_discrete_sequence=["#1D9E75"],
+                                height=300,
+                            )
+                            if nl_inw:
+                                fig_ink.add_hline(y=nl_inw, line_dash="dash", line_color="#888780",
+                                                  annotation_text="⌀ NL", annotation_position="right")
+                            fig_ink.update_layout(
+                                plot_bgcolor="white", paper_bgcolor="white",
+                                yaxis=dict(showgrid=True, gridcolor="#eee", tickprefix="€ "),
+                                xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
+                                margin=dict(t=8, b=50, l=60, r=40),
+                                showlegend=False,
+                            )
+                            st.plotly_chart(fig_ink, use_container_width=True)
 
             # ── Excel export ────────────────────────────────────────────────
             st.divider()
