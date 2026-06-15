@@ -7,6 +7,8 @@ import folium
 from folium.plugins import Draw
 from streamlit_folium import st_folium
 import plotly.express as px
+import io
+import base64
 
 st.set_page_config(page_title="Catchment Area Analyse", page_icon="🎯", layout="wide")
 st.title("🎯 Catchment Area Analyse")
@@ -205,6 +207,7 @@ for k, v in [
     ("gebied", None), ("gevonden_pcs", []),
     ("kaart_center", [52.15, 5.30]), ("kaart_zoom", 8),
     ("gebied_label", ""), ("analyse_klaar", False),
+    ("winkels", []), ("winkels_geladen", False),
 ]:
     if k not in st.session_state:
         st.session_state[k] = v
@@ -327,6 +330,56 @@ def geocode(zoekterm):
     except Exception:
         pass
     return None, None, None
+
+@st.cache_data(ttl=86400)
+def geocode_adres(store_number, address, postal_code, city):
+    """Geocodeer een winkeladres via PDOK."""
+    query = f"{address}, {postal_code} {city}, Nederland"
+    try:
+        r = requests.get(
+            "https://api.pdok.nl/bzk/locatieserver/search/v3_1/free",
+            params={"q": query, "rows": 1, "fl": "centroide_ll"},
+            timeout=6
+        )
+        if r.status_code == 200:
+            docs = r.json().get("response",{}).get("docs",[])
+            if docs:
+                cent = docs[0].get("centroide_ll","")
+                m = re.search(r"POINT\(([0-9.]+)\s+([0-9.]+)\)", cent)
+                if m:
+                    return float(m.group(2)), float(m.group(1))
+    except Exception:
+        pass
+    # Fallback: postcode centroid
+    pc4 = re.sub(r"[^0-9]", "", postal_code)[:4]
+    if pc4 in PC4_CENTROIDS:
+        lat, lon = PC4_CENTROIDS[pc4]
+        return lat, lon
+    return None, None
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def laad_en_geocodeer_winkels(bestand_bytes):
+    """Laad Excel en geocodeer alle winkels via PDOK."""
+    import pandas as pd, io
+    df = pd.read_excel(io.BytesIO(bestand_bytes))
+    df.columns = [str(c).strip() for c in df.columns]
+    # Detecteer kolommen automatisch
+    col_store  = df.columns[0]  # Store number = eerste kolom
+    col_city   = next((c for c in df.columns if "city" in c.lower() or "stad" in c.lower() or "plaats" in c.lower()), None)
+    col_addr   = next((c for c in df.columns if "address" in c.lower() or "adres" in c.lower()), None)
+    col_postal  = next((c for c in df.columns if "postal" in c.lower() or "postcode" in c.lower() or "zip" in c.lower()), None)
+    winkels = []
+    for _, row in df.iterrows():
+        store_nr = str(row[col_store])
+        city     = str(row[col_city])  if col_city  else ""
+        address  = str(row[col_addr])  if col_addr  else ""
+        postal   = str(row[col_postal]).strip() if col_postal else ""
+        lat, lon = geocode_adres(store_nr, address, postal, city)
+        if lat and lon:
+            winkels.append({"store": store_nr, "city": city,
+                            "address": address, "postal": postal,
+                            "lat": lat, "lon": lon})
+    return winkels
 
 # ── Geometrie helpers ──────────────────────────────────────────────────────────
 def haversine(lat1, lon1, lat2, lon2):
@@ -463,6 +516,29 @@ Klik daarna op **▶ Analyseer** hieronder.
                               use_container_width=True)
 
     st.divider()
+    st.header("📂 Winkellocaties")
+    uploaded_file = st.file_uploader(
+        "Upload adressenlijst (.xlsx)",
+        type=["xlsx"],
+        help="Kolommen: Store number, City, Address, Postal code"
+    )
+    if uploaded_file:
+        if st.button("📍 Pinpoint winkels op kaart", use_container_width=True):
+            with st.spinner(f"Winkels geocoderen via PDOK..."):
+                winkels = laad_en_geocodeer_winkels(uploaded_file.read())
+            st.session_state.winkels = winkels
+            st.session_state.winkels_geladen = True
+            st.success(f"{len(winkels)} winkels geplaatst!")
+            st.rerun()
+
+    if st.session_state.winkels_geladen:
+        st.caption(f"✅ {len(st.session_state.winkels)} winkels op kaart")
+        if st.button("🗑️ Winkels verwijderen", use_container_width=True):
+            st.session_state.winkels = []
+            st.session_state.winkels_geladen = False
+            st.rerun()
+
+    st.divider()
     max_pcs = st.slider("Max. postcodes", 5, 40, 15,
                         help="Meer = vollediger maar trager")
     st.caption(f"Peiljaar: {periode_title}")
@@ -519,6 +595,30 @@ with col_kaart:
             location=[lat_c, lon_c], radius=6,
             color="#1D9E75", fill=True, fill_color="#1D9E75",
             fill_opacity=0.8, tooltip=f"📮 {pc}",
+        ).add_to(m)
+
+    # Winkellocaties als pins
+    for winkel in st.session_state.winkels:
+        folium.Marker(
+            location=[winkel["lat"], winkel["lon"]],
+            tooltip=f"<b>#{winkel['store']}</b><br>{winkel['address']}<br>{winkel['city']}",
+            popup=folium.Popup(
+                f"<b>Store #{winkel['store']}</b><br>"
+                f"{winkel['address']}<br>"
+                f"{winkel['postal']} {winkel['city']}",
+                max_width=200
+            ),
+            icon=folium.DivIcon(
+                html=(
+                    f'<div style="background:#c8102e;color:white;padding:2px 5px;'
+                    f'border-radius:3px;font-size:11px;font-weight:700;'
+                    f'white-space:nowrap;border:1.5px solid white;'
+                    f'box-shadow:0 1px 3px rgba(0,0,0,.4);line-height:1.4">'
+                    f'#{winkel["store"]}</div>'
+                ),
+                icon_size=(60, 22),
+                icon_anchor=(30, 11),
+            )
         ).add_to(m)
 
     kaart_output = st_folium(
