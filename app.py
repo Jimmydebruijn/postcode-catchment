@@ -316,60 +316,34 @@ def get_hk_data(pc_key, periode_key, gb_totaal, gsl_key, hk_map):
 
 # ── CBS inkomen per postcode ──────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
-def get_ink_meta_simple():
-    """Haal kolomnamen, periode en PC4 RegioS-keys op."""
+def get_inkomen_voor_pc(pc):
+    """
+    Haal inkomenscijfers op voor één postcode.
+    Exacte implementatie zoals de werkende postcode-vergelijker.
+    Laadt RegioS volledig en zoekt op Title — geeft exacte key terug.
+    """
     props    = fetch(f"{INK_BASE}/DataProperties?$format=json")
     col_inw  = next((p["Key"] for p in props if "PerInwoner"          in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
     col_ontv = next((p["Key"] for p in props if "PerInkomensontvanger" in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
     col_med  = next((p["Key"] for p in props if "Mediaan"             in p["Key"]), None)
-    perioden = fetch(f"{INK_BASE}/Perioden?$format=json")
-    per_key  = perioden[-1]["Key"]
-    # Haal alleen postcode-regio's op (beginnen met PO) — veel kleiner dan volledige RegioS
-    regio_items = fetch(f"{INK_BASE}/RegioS?$format=json&$filter=startswith(Key,'PO')")
-    # Bouw lookup: '1741' -> exacte key met eventuele trailing spaces
-    pc_map = {}
-    nl_key = None
-    for r in regio_items:
-        k = r.get("Key","")
-        t = r.get("Title","").strip()
-        if k.strip().startswith("PO"):
-            pc4 = k.strip()[2:]  # strip PO prefix en whitespace
-            if pc4.isdigit() and len(pc4) == 4:
-                pc_map[pc4] = k  # bewaar exacte key inclusief trailing spaces
-        if "Nederland" in t:
-            nl_key = k
-    return per_key, col_inw, col_ontv, col_med, pc_map, nl_key
-
-@st.cache_data(ttl=3600)
-def get_ink_data(pc, per_key, col_inw, col_ontv, col_med, pc_map):
-    """Haal inkomen op voor één postcode met exacte RegioS key."""
-    regio_key = pc_map.get(pc)
+    if not any([col_inw, col_ontv, col_med]):
+        return None, {}
+    perioden    = fetch(f"{INK_BASE}/Perioden?$format=json")
+    periode_key = perioden[-1]["Key"]
+    regio_items = fetch(f"{INK_BASE}/RegioS?$format=json")
+    # Zoek eerst op Title (= de 4-cijferige postcode), dan op Key (PO-prefix)
+    regio_key = next((r["Key"] for r in regio_items if r.get("Title","").strip() == pc), None)
     if not regio_key:
-        return None
+        regio_key = next((r["Key"] for r in regio_items if r.get("Key","").strip() == f"PO{pc}"), None)
+    if not regio_key:
+        return None, {}
     select = ",".join(c for c in [col_inw, col_ontv, col_med] if c)
-    if not select:
-        return None
     obs = fetch(
         f"{INK_BASE}/TypedDataSet?$format=json"
-        f"&$filter=Perioden eq '{per_key}' and RegioS eq '{regio_key}'"
+        f"&$filter=Perioden eq '{periode_key}' and RegioS eq '{regio_key}'"
         f"&$select={select}"
     )
-    return obs[0] if obs else None
-
-@st.cache_data(ttl=3600)
-def get_ink_nl(per_key, col_inw, col_ontv, col_med, nl_key):
-    """Haal NL-totaal inkomen op."""
-    if not nl_key:
-        return None
-    select = ",".join(c for c in [col_inw, col_ontv, col_med] if c)
-    if not select:
-        return None
-    obs = fetch(
-        f"{INK_BASE}/TypedDataSet?$format=json"
-        f"&$filter=Perioden eq '{per_key}' and RegioS eq '{nl_key}'"
-        f"&$select={select}"
-    )
-    return obs[0] if obs else None
+    return (obs[0] if obs else None), {"inw": col_inw, "ontv": col_ontv, "med": col_med}
 
 # ── PDOK geocode (voor zoekfunctie) ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
@@ -432,7 +406,6 @@ with st.spinner("Metadata laden..."):
     periode_key, periode_title, leeftijd_map, leeftijd_keys, geslacht_key, pc_key_map = get_leeftijd_meta()
     hh_per_key, hh_map_meta, hh_pc_map = get_hh_meta()
     hk_per_key, hk_map_meta, gb_totaal, gsl_key, hk_pc_map = get_hk_meta()
-    ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med, ink_pc_map, ink_nl_key = get_ink_meta_simple()
 
 # Filter PC4_CENTROIDS op alleen bekende CBS-postcodes
 bekende_pcs = set(pc_key_map.keys())
@@ -776,8 +749,8 @@ with col_result:
                 if hk_key:
                     d = get_hk_data(hk_key, hk_per_key, gb_totaal, gsl_key, hk_map_meta)
                     if d: hk_res[pc] = d
-                ink_row = get_ink_data(pc, ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med, ink_pc_map)
-                if ink_row: ink_res[pc] = ink_row
+                ink_row, ink_cols_map = get_inkomen_voor_pc(pc)
+                if ink_row: ink_res[pc] = (ink_row, ink_cols_map)
 
             # Nederland benchmark — één call per tabel
             nl_leeftijd_key = pc_key_map.get("Nederland")
@@ -793,7 +766,7 @@ with col_result:
             hh_agg   = combineer(list(hh_res.values()))
             hk_agg   = combineer(list(hk_res.values()))
 
-            tab1, tab2, tab3, tab4 = st.tabs(["👥 Leeftijd", "🏠 Huishoudens", "🌍 Herkomst", "💶 Inkomen"])
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["👥 Leeftijd", "🏠 Huishoudens", "🌍 Herkomst", "💶 Inkomen", "👫 Man/Vrouw"])
 
             with tab1:
                 tot  = sum(verd_agg.values())
@@ -968,59 +941,147 @@ with col_result:
                 if not ink_res:
                     st.info("Geen inkomensdata beschikbaar voor dit gebied.")
                 else:
-                    # Bereken gewogen gemiddelden over alle postcodes
+                    first_row, first_cols_map = next(iter(ink_res.values()))
+                    col_inw  = first_cols_map.get("inw")
+                    col_ontv = first_cols_map.get("ontv")
+                    col_med  = first_cols_map.get("med")
+
                     def gem_ink(col):
-                        vals = [r.get(col) for r in ink_res.values() if r.get(col)]
+                        if not col: return None
+                        vals = [row.get(col) for row, _ in ink_res.values() if row and row.get(col)]
                         return round(sum(vals) / len(vals) * 1000) if vals else None
 
-                    gem_inw  = gem_ink(ink_col_inw)  if ink_col_inw  else None
-                    gem_ontv = gem_ink(ink_col_ontv) if ink_col_ontv else None
-                    gem_med  = gem_ink(ink_col_med)  if ink_col_med  else None
+                    gem_inw  = gem_ink(col_inw)
+                    gem_ontv = gem_ink(col_ontv)
+                    gem_med  = gem_ink(col_med)
 
-                    # NL benchmark via aparte call
-                    nl_ink = get_ink_nl(ink_per_key, ink_col_inw, ink_col_ontv, ink_col_med, ink_nl_key)
-                    nl_inw  = round(nl_ink.get(ink_col_inw,  0) * 1000) if nl_ink and ink_col_inw  else None
-                    nl_ontv = round(nl_ink.get(ink_col_ontv, 0) * 1000) if nl_ink and ink_col_ontv else None
-                    nl_med  = round(nl_ink.get(ink_col_med,  0) * 1000) if nl_ink and ink_col_med  else None
+                    # NL benchmark via zelfde functie
+                    nl_row, nl_cols_map = get_inkomen_voor_pc("NL01    ".strip())
+                    if not nl_row:
+                        nl_row, nl_cols_map = get_inkomen_voor_pc("Nederland")
+                    nl_inw  = round(nl_row.get(col_inw,  0) * 1000) if nl_row and col_inw  else None
+                    nl_ontv = round(nl_row.get(col_ontv, 0) * 1000) if nl_row and col_ontv else None
+                    nl_med  = round(nl_row.get(col_med,  0) * 1000) if nl_row and col_med  else None
 
                     c1, c2, c3 = st.columns(3)
                     if gem_inw:
-                        delta_inw = f"€ {gem_inw - nl_inw:+,.0f} vs NL".replace(",",".") if nl_inw else None
-                        c1.metric("Gem. per inwoner", f"€ {gem_inw:,}".replace(",","."), delta=delta_inw)
+                        c1.metric("Gem. per inwoner",   f"€ {gem_inw:,}".replace(",","."),
+                                  delta=f"€ {gem_inw-nl_inw:+,.0f} vs NL".replace(",",".") if nl_inw else None)
                     if gem_ontv:
-                        delta_ontv = f"€ {gem_ontv - nl_ontv:+,.0f} vs NL".replace(",",".") if nl_ontv else None
-                        c2.metric("Gem. per ontvanger", f"€ {gem_ontv:,}".replace(",","."), delta=delta_ontv)
+                        c2.metric("Gem. per ontvanger", f"€ {gem_ontv:,}".replace(",","."),
+                                  delta=f"€ {gem_ontv-nl_ontv:+,.0f} vs NL".replace(",",".") if nl_ontv else None)
                     if gem_med:
-                        delta_med = f"€ {gem_med - nl_med:+,.0f} vs NL".replace(",",".") if nl_med else None
-                        c3.metric("Mediaan inkomen", f"€ {gem_med:,}".replace(",","."), delta=delta_med)
+                        c3.metric("Mediaan inkomen",    f"€ {gem_med:,}".replace(",","."),
+                                  delta=f"€ {gem_med-nl_med:+,.0f} vs NL".replace(",",".") if nl_med else None)
                     st.caption("Delta t.o.v. landelijk gemiddelde. Gemiddelde over postcodes in het gebied.")
 
-                    # Staafgrafiek per postcode
-                    if ink_col_inw and len(ink_res) > 1:
-                        ink_plot = []
-                        for pc, row in ink_res.items():
-                            val = row.get(ink_col_inw)
-                            if val:
-                                ink_plot.append({"Postcode": pc, "Gem. inkomen per inwoner (€)": round(val * 1000)})
+                    if col_inw and len(ink_res) > 1:
+                        ink_plot = [{"Postcode": pc_i, "€": round(row.get(col_inw,0)*1000)}
+                                    for pc_i,(row,_) in ink_res.items() if row and row.get(col_inw)]
                         if ink_plot:
-                            ink_plot.sort(key=lambda x: x["Gem. inkomen per inwoner (€)"], reverse=True)
-                            fig_ink = px.bar(
-                                pd.DataFrame(ink_plot),
-                                x="Postcode", y="Gem. inkomen per inwoner (€)",
-                                color_discrete_sequence=["#1D9E75"],
-                                height=300,
-                            )
+                            ink_plot.sort(key=lambda x: x["€"], reverse=True)
+                            fig_ink = px.bar(pd.DataFrame(ink_plot), x="Postcode", y="€",
+                                             color_discrete_sequence=["#1D9E75"], height=280)
                             if nl_inw:
                                 fig_ink.add_hline(y=nl_inw, line_dash="dash", line_color="#888780",
                                                   annotation_text="⌀ NL", annotation_position="right")
                             fig_ink.update_layout(
                                 plot_bgcolor="white", paper_bgcolor="white",
-                                yaxis=dict(showgrid=True, gridcolor="#eee", tickprefix="€ "),
+                                yaxis=dict(showgrid=True, gridcolor="#eee", tickprefix="€ ", title=""),
                                 xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
-                                margin=dict(t=8, b=50, l=60, r=40),
-                                showlegend=False,
+                                margin=dict(t=8, b=50, l=60, r=40), showlegend=False,
                             )
                             st.plotly_chart(fig_ink, use_container_width=True)
+
+            with tab5:
+                # Man/vrouw per leeftijdsklasse
+                if not verdelingen:
+                    st.info("Geen data.")
+                else:
+                    # Haal man en vrouw verdelingen op
+                    with st.spinner("Man/vrouw data ophalen..."):
+                        # Zoek geslacht keys voor man en vrouw
+                        gsl_items = fetch(f"{BASE}/Geslacht?$format=json")
+                        man_key   = next((g["Key"] for g in gsl_items if "Man"   in g["Title"] and "Vrouw" not in g["Title"]), None)
+                        vrouw_key = next((g["Key"] for g in gsl_items if "Vrouw" in g["Title"]), None)
+
+                        man_verds   = {}
+                        vrouw_verds = {}
+                        for pc in pcs_te_laden:
+                            key = pc_key_map.get(pc)
+                            if not key: continue
+                            if man_key:
+                                v = get_leeftijd_verd(key, periode_key, man_key, leeftijd_keys, leeftijd_map)
+                                if v: man_verds[pc] = v
+                            if vrouw_key:
+                                v = get_leeftijd_verd(key, periode_key, vrouw_key, leeftijd_keys, leeftijd_map)
+                                if v: vrouw_verds[pc] = v
+
+                    man_agg   = combineer(list(man_verds.values()))
+                    vrouw_agg = combineer(list(vrouw_verds.values()))
+
+                    if not man_agg and not vrouw_agg:
+                        st.info("Geen man/vrouw data beschikbaar.")
+                    else:
+                        tot_m = sum(man_agg.values())
+                        tot_v = sum(vrouw_agg.values())
+                        tot   = tot_m + tot_v
+
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("Totaal inwoners", f"{int(tot):,}".replace(",","."))
+                        c2.metric("Man",   f"{tot_m/tot*100:.1f}%" if tot else "—")
+                        c3.metric("Vrouw", f"{tot_v/tot*100:.1f}%" if tot else "—")
+
+                        st.divider()
+
+                        # Gestapelde balk per leeftijdsklasse — man vs vrouw
+                        mv_plot = []
+                        for lbl in LABELS_VOLGORDE:
+                            m_pct = man_agg.get(lbl,0) / max(tot,1) * 100
+                            v_pct = vrouw_agg.get(lbl,0) / max(tot,1) * 100
+                            mv_plot.append({"Leeftijdsgroep": lbl, "Percentage": round(m_pct,1), "Geslacht": "Man"})
+                            mv_plot.append({"Leeftijdsgroep": lbl, "Percentage": round(v_pct,1), "Geslacht": "Vrouw"})
+
+                        fig_mv = px.bar(pd.DataFrame(mv_plot),
+                                        x="Leeftijdsgroep", y="Percentage",
+                                        color="Geslacht", barmode="group",
+                                        color_discrete_map={"Man": "#185FA5", "Vrouw": "#E91E8C"},
+                                        category_orders={"Geslacht": ["Man", "Vrouw"]},
+                                        labels={"Percentage": "% van totaal"}, height=300)
+                        fig_mv.update_layout(
+                            plot_bgcolor="white", paper_bgcolor="white",
+                            xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
+                            yaxis=dict(showgrid=True, gridcolor="#eee", title=""),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                            margin=dict(t=30, b=50, l=30, r=8),
+                        )
+                        st.plotly_chart(fig_mv, use_container_width=True)
+
+                        # Populatiepiramide
+                        st.subheader("Populatiepiramide")
+                        pir_data = []
+                        for lbl in reversed(LABELS_VOLGORDE):
+                            pir_data.append({"Leeftijd": lbl, "Aantal": -man_agg.get(lbl,0), "Geslacht": "Man"})
+                            pir_data.append({"Leeftijd": lbl, "Aantal":  vrouw_agg.get(lbl,0), "Geslacht": "Vrouw"})
+                        fig_pir = px.bar(pd.DataFrame(pir_data),
+                                         x="Aantal", y="Leeftijd",
+                                         color="Geslacht", orientation="h",
+                                         color_discrete_map={"Man": "#185FA5", "Vrouw": "#E91E8C"},
+                                         height=420)
+                        max_val = max(max(man_agg.values(), default=0), max(vrouw_agg.values(), default=0))
+                        fig_pir.update_layout(
+                            plot_bgcolor="white", paper_bgcolor="white",
+                            xaxis=dict(range=[-max_val*1.1, max_val*1.1],
+                                       tickvals=[-max_val, -max_val//2, 0, max_val//2, max_val],
+                                       ticktext=[str(abs(max_val)), str(abs(max_val//2)), "0",
+                                                 str(max_val//2), str(max_val)],
+                                       showgrid=True, gridcolor="#eee", title="Aantal"),
+                            yaxis=dict(title=""),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                            margin=dict(t=30, b=30, l=50, r=30),
+                            barmode="overlay",
+                        )
+                        st.plotly_chart(fig_pir, use_container_width=True)
 
             # ── Excel export ────────────────────────────────────────────────
             st.divider()
