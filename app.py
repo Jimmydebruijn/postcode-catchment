@@ -333,23 +333,47 @@ def get_inkomen_meta():
 
 @st.cache_data(ttl=3600)
 def get_inkomen(pc):
-    """Haal inkomen op voor één postcode."""
+    """
+    Haal inkomen op voor één postcode.
+    Omzeilt RegioS lookup — filtert TypedDataSet direct via UntypedDataSet
+    op basis van de postcode waarde in de RegioS kolom.
+    """
     periode_key, cols = get_inkomen_meta()
-    select = ",".join(cols.values())
-    # RegioS key = PO + postcode, direct bevragen via substringof
-    regio_items = fetch(
-        f"{INK_BASE}/RegioS?$format=json"
-        f"&$filter=substringof('PO{pc}',Key)"
-    )
-    if not regio_items:
-        return None, cols
-    regio_key = regio_items[0]["Key"]
-    obs = fetch(
-        f"{INK_BASE}/TypedDataSet?$format=json"
-        f"&$filter=Perioden eq '{periode_key}' and RegioS eq '{regio_key}'"
-        f"&$select={select}"
-    )
-    return (obs[0] if obs else None), cols
+    select = "RegioS," + ",".join(cols.values())
+
+    # Probeer via UntypedDataSet — ondersteunt $filter op alle kolommen
+    # inclusief de RegioS waarde zelf
+    for po_key in [f"PO{pc}", f"PO{pc}  ", f"PO{pc}   ", f"PO{pc}    "]:
+        obs = fetch(
+            f"{INK_BASE}/TypedDataSet?$format=json"
+            f"&$filter=Perioden eq '{periode_key}' and RegioS eq '{po_key}'"
+            f"&$select={select}"
+        )
+        if obs:
+            return obs[0], cols
+
+    # Fallback: UntypedDataSet geeft strings terug — makkelijker te filteren
+    try:
+        r = requests.get(
+            f"{INK_BASE}/UntypedDataSet?$format=json"
+            f"&$filter=Perioden eq '{periode_key}'",
+            timeout=30
+        )
+        if r.status_code == 200:
+            rows = r.json().get("value", [])
+            for row in rows:
+                regio = row.get("RegioS","").strip()
+                if regio == f"PO{pc}" or regio.rstrip() == f"PO{pc}":
+                    # Converteer strings naar floats
+                    result = {}
+                    for k in cols.values():
+                        try: result[k] = float(row.get(k, 0) or 0)
+                        except: result[k] = 0
+                    return result, cols
+    except Exception:
+        pass
+
+    return None, cols
 
 # ── PDOK geocode (voor zoekfunctie) ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
@@ -964,16 +988,25 @@ with col_result:
                             periode_key_t = perioden_t[-1]["Key"] if perioden_t else None
                             st.write(f"✅ Periode: `{periode_key_t}`")
 
-                            # Stap 3: RegioS direct filteren op postcode
-                            regio_direct = fetch(f"{INK_BASE}/RegioS?$format=json&$filter=Title eq '{test_pc}'")
-                            st.write(f"RegioS filter Title=='{test_pc}': {len(regio_direct)} items")
-                            if regio_direct:
-                                for item in regio_direct:
-                                    st.write(f"  Key=`{repr(item['Key'])}` Title=`{repr(item.get('Title',''))}`")
-                                regio_key_t = regio_direct[0]["Key"]
+                            # Stap 3: Probeer TypedDataSet direct met PO-keys
+                            st.write("**Direct TypedDataSet query:**")
+                            for po_try in [f"PO{test_pc}", f"PO{test_pc}  ", f"PO{test_pc}   "]:
+                                obs_try = fetch(
+                                    f"{INK_BASE}/TypedDataSet?$format=json"
+                                    f"&$filter=Perioden eq '{periode_key_t}' and RegioS eq '{po_try}'"
+                                    f"&$select=RegioS,{col_med_t}"
+                                )
+                                st.write(f"  Key `{po_try!r}`: {len(obs_try)} rijen {obs_try[0] if obs_try else ''}")
+                                if obs_try:
+                                    regio_key_t = po_try
+                                    break
                             else:
                                 regio_key_t = None
-                                st.warning("Geen RegioS gevonden voor deze postcode")
+                                # Toon eerste rij van TypedDataSet om exacte RegioS waarde te zien
+                                sample = fetch(f"{INK_BASE}/TypedDataSet?$format=json&$filter=Perioden eq '{periode_key_t}'&$select=RegioS&$top=5")
+                                st.write("Eerste 5 RegioS waarden in TypedDataSet:")
+                                for s in sample:
+                                    st.write(f"  `{repr(s.get('RegioS',''))}`")
 
                             # Stap 4: Data ophalen
                             if regio_key_t and col_inw_t and periode_key_t:
