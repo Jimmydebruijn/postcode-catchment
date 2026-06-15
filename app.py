@@ -961,6 +961,10 @@ with col_result:
                             col_inw_t  = next((p["Key"] for p in props_test if "PerInwoner"          in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
                             col_med_t  = next((p["Key"] for p in props_test if "Mediaan"             in p["Key"]), None)
                             st.write(f"✅ DataProperties OK — col_inw: `{col_inw_t}`, col_med: `{col_med_t}`")
+                            st.write("**Alle beschikbare kolommen:**")
+                            for p in props_test:
+                                if p.get("Type") not in ("Dimension", "TimeDimension", "GeoDimension"):
+                                    st.write(f"  `{p['Key']}` — {p.get('Title','')}")
 
                             # Stap 2: Perioden
                             perioden_t    = fetch(f"{INK_BASE}/Perioden?$format=json")
