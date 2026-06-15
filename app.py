@@ -942,8 +942,8 @@ with col_result:
                 sub(ws1, r, 1, "👥 LEEFTIJD"); ws1.merge_cells(f"A{r}:C{r}")
                 r += 1; cel(ws1,r,1,"Inwoners");         cel(ws1,r,2,tot_inw,'#,##0')
                 r += 1; cel(ws1,r,1,"Gem. leeftijd");    cel(ws1,r,2,round(gem_lft,1) if gem_lft else "","0.0"); cel(ws1,r,3,42.0,"0.0")
-                r += 1; cel(ws1,r,1,"Aandeel 65+");      cel(ws1,r,2,round(pct_65,1),"0.0"%""); cel(ws1,r,3,19.6,"0.0"%"")
-                r += 1; cel(ws1,r,1,"Aandeel 0-25");     cel(ws1,r,2,round(pct_025,1),"0.0"%""); cel(ws1,r,3,27.5,"0.0"%"")
+                r += 1; cel(ws1,r,1,"Aandeel 65+");      cel(ws1,r,2,round(pct_65,1),"0.0"); cel(ws1,r,3,19.6,"0.0")
+                r += 1; cel(ws1,r,1,"Aandeel 0-25");     cel(ws1,r,2,round(pct_025,1),"0.0"); cel(ws1,r,3,27.5,"0.0")
 
                 # Leeftijdsverdeling per groep
                 r += 1
@@ -952,16 +952,16 @@ with col_result:
                 for lbl_l in LABELS_VOLGORDE:
                     r += 1
                     cel(ws1,r,1,lbl_l)
-                    cel(ws1,r,2,round(lft_pct.get(lbl_l,0),1),"0.0"%"")
+                    cel(ws1,r,2,round(lft_pct.get(lbl_l,0),1),"0.0")
 
                 # Huishoudens sectie
                 r += 1
                 sub(ws1, r, 1, "🏠 HUISHOUDENS"); ws1.merge_cells(f"A{r}:C{r}")
                 r += 1; cel(ws1,r,1,"Totaal huishoudens"); cel(ws1,r,2,tot_hh_v,'#,##0')
                 r += 1; cel(ws1,r,1,"Gem. grootte");       cel(ws1,r,2,round(gem_grootte_export,2),"0.00"); cel(ws1,r,3,2.17,"0.00")
-                r += 1; cel(ws1,r,1,"Alleenstaand");       cel(ws1,r,2,round(pct_alone_v,1),"0.0"%""); cel(ws1,r,3,40.3,"0.0"%"")
-                r += 1; cel(ws1,r,1,"Gezin met kinderen"); cel(ws1,r,2,round(pct_gezin_v,1),"0.0"%""); cel(ws1,r,3,31.5,"0.0"%"")
-                r += 1; cel(ws1,r,1,"Stel/meerp. z. kind"); cel(ws1,r,2,round(pct_stel_v,1),"0.0"%""); cel(ws1,r,3,28.2,"0.0"%"")
+                r += 1; cel(ws1,r,1,"Alleenstaand");       cel(ws1,r,2,round(pct_alone_v,1),"0.0"); cel(ws1,r,3,40.3,"0.0")
+                r += 1; cel(ws1,r,1,"Gezin met kinderen"); cel(ws1,r,2,round(pct_gezin_v,1),"0.0"); cel(ws1,r,3,31.5,"0.0")
+                r += 1; cel(ws1,r,1,"Stel/meerp. z. kind"); cel(ws1,r,2,round(pct_stel_v,1),"0.0"); cel(ws1,r,3,28.2,"0.0")
 
                 # Herkomst sectie
                 r += 1
@@ -969,7 +969,7 @@ with col_result:
                 for cat in HK_CAT:
                     r += 1
                     cel(ws1,r,1,cat)
-                    cel(ws1,r,2,round(hk_agg.get(cat,0)/tot_hk_v*100,1),"0.0"%"")
+                    cel(ws1,r,2,round(hk_agg.get(cat,0)/tot_hk_v*100,1),"0.0")
 
                 set_col_width(ws1, 1, 30)
                 set_col_width(ws1, 2, 18)
