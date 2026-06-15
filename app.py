@@ -575,6 +575,12 @@ with col_result:
                 if hk_key:
                     d = get_hk_data(hk_key, hk_per_key, gb_totaal, gsl_key, hk_map_meta)
                     if d: hk_res[pc] = d
+
+            # Nederland benchmark — één call per tabel
+            nl_leeftijd_key = pc_key_map.get("Nederland")
+            nl_verd = get_leeftijd_verd(nl_leeftijd_key, periode_key, geslacht_key, leeftijd_keys, leeftijd_map) if nl_leeftijd_key else {}
+            nl_hh_key = hh_pc_map.get("Nederland")
+            nl_hh = get_hh_data(nl_hh_key, hh_per_key, hh_map_meta) if nl_hh_key else {}
             prog.empty()
 
         if not verdelingen:
@@ -591,45 +597,112 @@ with col_result:
                 gem  = gem_leeftijd_fn(verd_agg)
                 oud  = sum(v for k,v in verd_agg.items() if k in ["65-70","70-75","75-80","80-85","85-90","90+"])
                 jong = sum(v for k,v in verd_agg.items() if k in ["0-5","5-10","10-15","15-20","20-25"])
+
+                # NL benchmarks
+                nl_tot  = sum(nl_verd.values()) or 1
+                nl_gem  = gem_leeftijd_fn(nl_verd)
+                nl_oud  = sum(v for k,v in nl_verd.items() if k in ["65-70","70-75","75-80","80-85","85-90","90+"])
+                nl_jong = sum(v for k,v in nl_verd.items() if k in ["0-5","5-10","10-15","15-20","20-25"])
+
                 c1,c2 = st.columns(2)
-                c1.metric("Inwoners",      f"{int(tot):,}".replace(",","."))
-                c2.metric("Gem. leeftijd", f"{gem:.1f} jaar" if gem else "—")
+                c1.metric("Inwoners", f"{int(tot):,}".replace(",","."))
+                c2.metric("Gem. leeftijd", f"{gem:.1f} jaar" if gem else "—",
+                          delta=f"{gem - nl_gem:+.1f} vs NL" if gem and nl_gem else None)
                 c3,c4 = st.columns(2)
-                c3.metric("Aandeel 65+",  f"{oud/tot*100:.1f}%")
-                c4.metric("Aandeel 0-25", f"{jong/tot*100:.1f}%")
-                df = pd.DataFrame([
-                    {"Leeftijdsgroep": lbl, "%": round(pct(verd_agg).get(lbl,0),1)}
-                    for lbl in LABELS_VOLGORDE
-                ])
-                fig = px.bar(df, x="Leeftijdsgroep", y="%",
-                             color_discrete_sequence=["#1D9E75"], height=250)
+                c3.metric("Aandeel 65+",  f"{oud/tot*100:.1f}%",
+                          delta=f"{oud/tot*100 - nl_oud/nl_tot*100:+.1f}%-pt vs NL" if nl_verd else None)
+                c4.metric("Aandeel 0-25", f"{jong/tot*100:.1f}%",
+                          delta=f"{jong/tot*100 - nl_jong/nl_tot*100:+.1f}%-pt vs NL" if nl_verd else None)
+                st.caption("Delta t.o.v. landelijk gemiddelde")
+
+                # Vergelijkingsgrafiek gebied vs NL
+                gebied_pct = pct(verd_agg)
+                nl_pct_l   = pct(nl_verd)
+                plot_data = []
+                for lbl in LABELS_VOLGORDE:
+                    plot_data.append({"Leeftijdsgroep": lbl, "%": round(gebied_pct.get(lbl,0),1), "Reeks": "Gebied"})
+                    if nl_verd:
+                        plot_data.append({"Leeftijdsgroep": lbl, "%": round(nl_pct_l.get(lbl,0),1), "Reeks": "⌀ Nederland"})
+
+                fig = px.bar(pd.DataFrame(plot_data), x="Leeftijdsgroep", y="%",
+                             color="Reeks", barmode="group",
+                             color_discrete_map={"Gebied": "#1D9E75", "⌀ Nederland": "#888780"},
+                             category_orders={"Reeks": ["Gebied", "⌀ Nederland"]},
+                             height=280)
                 fig.update_layout(
                     plot_bgcolor="white", paper_bgcolor="white",
                     xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
                     yaxis=dict(showgrid=True, gridcolor="#eee", title=""),
-                    margin=dict(t=8, b=50, l=30, r=8), showlegend=False,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)),
+                    margin=dict(t=30, b=50, l=30, r=8),
                 )
                 st.plotly_chart(fig, use_container_width=True)
+
+                # Afwijkingsgrafiek
+                if nl_verd:
+                    afw = [{"Leeftijdsgroep": lbl,
+                            "Afwijking (%-punt)": round(gebied_pct.get(lbl,0) - nl_pct_l.get(lbl,0), 1)}
+                           for lbl in LABELS_VOLGORDE]
+                    fig2 = px.bar(pd.DataFrame(afw), x="Leeftijdsgroep", y="Afwijking (%-punt)",
+                                  color="Afwijking (%-punt)",
+                                  color_continuous_scale=["#534AB7","#eee","#1D9E75"],
+                                  color_continuous_midpoint=0, height=220)
+                    fig2.add_hline(y=0, line_color="#333", line_width=1)
+                    fig2.update_coloraxes(showscale=False)
+                    fig2.update_layout(
+                        plot_bgcolor="white", paper_bgcolor="white",
+                        xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
+                        yaxis=dict(showgrid=True, gridcolor="#eee", zeroline=False, title=""),
+                        margin=dict(t=8, b=50, l=30, r=8),
+                    )
+                    st.caption("Afwijking t.o.v. Nederland — groen = meer dan NL, paars = minder")
+                    st.plotly_chart(fig2, use_container_width=True)
 
             with tab2:
                 if not hh_agg:
                     st.info("Geen huishoudensdata.")
                 else:
-                    tot_hh = hh_agg.get("__totaal",1) or 1
+                    HH_TYPEN_LABELS = ["Alleenstaand", "Gezin met kinderen", "Stel/meerp. zonder kinderen"]
+                    tot_hh    = hh_agg.get("__totaal",1) or 1
+                    nl_tot_hh = nl_hh.get("__totaal",1) or 1
+
                     c1,c2 = st.columns(2)
-                    c1.metric("Huishoudens",  f"{int(tot_hh):,}".replace(",","."))
-                    c2.metric("Gem. grootte", f"{hh_agg.get('__grootte',0):.1f} pers.")
-                    pie = {k:v for k,v in hh_agg.items() if not k.startswith("__") and v>0}
-                    if pie:
-                        fig_p = px.pie(names=list(pie.keys()), values=list(pie.values()),
-                                       color_discrete_sequence=["#1D9E75","#185FA5","#BA7517"],
-                                       hole=0.45, height=250)
-                        fig_p.update_layout(margin=dict(t=8,b=8,l=8,r=8),
-                                            legend=dict(font=dict(size=10)))
-                        st.plotly_chart(fig_p, use_container_width=True)
-                        tot_pie = sum(pie.values())
-                        for k,v in pie.items():
-                            st.write(f"**{k}:** {v/tot_pie*100:.1f}%")
+                    c1.metric("Huishoudens", f"{int(tot_hh):,}".replace(",","."))
+                    c2.metric("Gem. grootte", f"{hh_agg.get('__grootte',0):.1f} pers.",
+                              delta=f"{hh_agg.get('__grootte',0) - nl_hh.get('__grootte',0):+.1f} vs NL" if nl_hh else None)
+
+                    # Alleenstaand vergelijking
+                    pc_alone = hh_agg.get("Alleenstaand",0)/tot_hh*100
+                    nl_alone = nl_hh.get("Alleenstaand",0)/nl_tot_hh*100 if nl_hh else None
+                    pc_gezin = hh_agg.get("Gezin met kinderen",0)/tot_hh*100
+                    nl_gezin = nl_hh.get("Gezin met kinderen",0)/nl_tot_hh*100 if nl_hh else None
+                    c3,c4 = st.columns(2)
+                    c3.metric("Aandeel alleenstaand", f"{pc_alone:.1f}%",
+                              delta=f"{pc_alone - nl_alone:+.1f}%-pt vs NL" if nl_alone else None)
+                    c4.metric("Aandeel gezin m. kinderen", f"{pc_gezin:.1f}%",
+                              delta=f"{pc_gezin - nl_gezin:+.1f}%-pt vs NL" if nl_gezin else None)
+                    st.caption("Delta t.o.v. landelijk gemiddelde")
+
+                    # Vergelijkingsgrafiek
+                    hh_plot = []
+                    for typ in HH_TYPEN_LABELS:
+                        hh_plot.append({"Type": typ, "%": round(hh_agg.get(typ,0)/tot_hh*100,1), "Reeks": "Gebied"})
+                        if nl_hh:
+                            hh_plot.append({"Type": typ, "%": round(nl_hh.get(typ,0)/nl_tot_hh*100,1), "Reeks": "⌀ Nederland"})
+
+                    fig_hh = px.bar(pd.DataFrame(hh_plot), x="Type", y="%",
+                                    color="Reeks", barmode="group",
+                                    color_discrete_map={"Gebied": "#1D9E75", "⌀ Nederland": "#888780"},
+                                    category_orders={"Reeks": ["Gebied", "⌀ Nederland"]},
+                                    labels={"%": "% van huishoudens"}, height=260)
+                    fig_hh.update_layout(
+                        plot_bgcolor="white", paper_bgcolor="white",
+                        yaxis=dict(showgrid=True, gridcolor="#eee", title=""),
+                        xaxis=dict(tickfont=dict(size=10)),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)),
+                        margin=dict(t=30, b=20, l=30, r=8),
+                    )
+                    st.plotly_chart(fig_hh, use_container_width=True)
 
             with tab3:
                 if not hk_agg:
