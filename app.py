@@ -320,43 +320,36 @@ def get_hk_data(pc_key, periode_key, gb_totaal, gsl_key, hk_map):
 # ── CBS inkomen ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def get_inkomen_meta():
-    """Haal kolomnamen en periode eenmalig op."""
-    props    = fetch(f"{INK_BASE}/DataProperties?$format=json")
-    # Zoek alle inkomenskolommen — gebruik ruimere zoektermen
-    col_inw  = next((p["Key"] for p in props if "PerInwoner"           in p["Key"]), None)
-    col_ontv = next((p["Key"] for p in props if "PerInkomensontvanger"  in p["Key"]), None)
-    col_med  = next((p["Key"] for p in props if "Mediaan"              in p["Key"]), None)
+    """Haal kolomnamen en periode eenmalig op — exacte kolomnamen uit 85064NED."""
     perioden    = fetch(f"{INK_BASE}/Perioden?$format=json")
     periode_key = perioden[-1]["Key"]
-    return periode_key, col_inw, col_ontv, col_med
+    # Exacte kolomnamen zoals zichtbaar in DataProperties
+    return periode_key, {
+        "gem_ink":    "GemiddeldGestandaardiseerdInkomen_3",
+        "med_ink":    "MediaanGestandaardiseerdInkomen_4",
+        "gem_best":   "GemiddeldBesteedbaarInkomen_5",
+        "med_best":   "MediaanBesteedbaarInkomen_6",
+    }
 
 @st.cache_data(ttl=3600)
 def get_inkomen(pc):
-    """Haal inkomen op voor één postcode via directe TypedDataSet query."""
-    periode_key, col_inw, col_ontv, col_med = get_inkomen_meta()
-    if not any([col_inw, col_ontv, col_med]):
-        return None, {}
-    select = ",".join(c for c in [col_inw, col_ontv, col_med] if c)
-    # Zoek de RegioS key direct via filter op de postcode Title
+    """Haal inkomen op voor één postcode."""
+    periode_key, cols = get_inkomen_meta()
+    select = ",".join(cols.values())
+    # RegioS key = PO + postcode, direct bevragen via substringof
     regio_items = fetch(
         f"{INK_BASE}/RegioS?$format=json"
-        f"&$filter=Title eq '{pc}'"
+        f"&$filter=substringof('PO{pc}',Key)"
     )
     if not regio_items:
-        # Fallback: filter op Key
-        regio_items = fetch(
-            f"{INK_BASE}/RegioS?$format=json"
-            f"&$filter=substringof('{pc}',Key)"
-        )
-    if not regio_items:
-        return None, {}
+        return None, cols
     regio_key = regio_items[0]["Key"]
     obs = fetch(
         f"{INK_BASE}/TypedDataSet?$format=json"
         f"&$filter=Perioden eq '{periode_key}' and RegioS eq '{regio_key}'"
         f"&$select={select}"
     )
-    return (obs[0] if obs else None), {"inw": col_inw, "ontv": col_ontv, "med": col_med}
+    return (obs[0] if obs else None), cols
 
 # ── PDOK geocode (voor zoekfunctie) ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
@@ -996,46 +989,61 @@ with col_result:
                 if not ink_res:
                     st.info("Geen inkomensdata beschikbaar voor dit gebied.")
                 else:
-                    first_row, first_cols = next(iter(ink_res.values()))
-                    col_inw  = first_cols.get("inw")
-                    col_ontv = first_cols.get("ontv")
-                    col_med  = first_cols.get("med")
+                    _, cols = next(iter(ink_res.values()))
+                    c_gem  = cols.get("gem_ink")
+                    c_med  = cols.get("med_ink")
+                    c_gbes = cols.get("gem_best")
+                    c_mbes = cols.get("med_best")
 
                     def avg_ink(col):
                         if not col: return None
                         vals = [r.get(col) for r,_ in ink_res.values() if r and r.get(col)]
                         return round(sum(vals)/len(vals)*1000) if vals else None
 
-                    gem_inw  = avg_ink(col_inw)
-                    gem_ontv = avg_ink(col_ontv)
-                    gem_med  = avg_ink(col_med)
+                    gem_ink  = avg_ink(c_gem)
+                    med_ink  = avg_ink(c_med)
+                    gem_best = avg_ink(c_gbes)
+                    med_best = avg_ink(c_mbes)
 
-                    nl_row, nl_c = get_inkomen("NL01")
-                    nl_inw  = round(nl_row.get(col_inw,  0)*1000) if nl_row and col_inw  else None
-                    nl_ontv = round(nl_row.get(col_ontv, 0)*1000) if nl_row and col_ontv else None
-                    nl_med  = round(nl_row.get(col_med,  0)*1000) if nl_row and col_med  else None
+                    # NL benchmark
+                    nl_row, nl_cols = get_inkomen("NL01")
+                    nl_gem  = round(nl_row.get(c_gem,  0)*1000) if nl_row and c_gem  else None
+                    nl_med  = round(nl_row.get(c_med,  0)*1000) if nl_row and c_med  else None
+                    nl_gbes = round(nl_row.get(c_gbes, 0)*1000) if nl_row and c_gbes else None
+                    nl_mbes = round(nl_row.get(c_mbes, 0)*1000) if nl_row and c_mbes else None
 
-                    c1, c2, c3 = st.columns(3)
-                    if gem_inw:
-                        c1.metric("Gem. per inwoner",   f"€ {gem_inw:,}".replace(",","."),
-                                  delta=f"€ {gem_inw-nl_inw:+,.0f} vs NL".replace(",",".") if nl_inw else None)
-                    if gem_ontv:
-                        c2.metric("Gem. per ontvanger", f"€ {gem_ontv:,}".replace(",","."),
-                                  delta=f"€ {gem_ontv-nl_ontv:+,.0f} vs NL".replace(",",".") if nl_ontv else None)
-                    if gem_med:
-                        c3.metric("Mediaan inkomen",    f"€ {gem_med:,}".replace(",","."),
-                                  delta=f"€ {gem_med-nl_med:+,.0f} vs NL".replace(",",".") if nl_med else None)
+                    # Kerncijfers
+                    c1, c2 = st.columns(2)
+                    if gem_ink:
+                        c1.metric("Gem. gestandaardiseerd inkomen",
+                                  f"€ {gem_ink:,}".replace(",","."),
+                                  delta=f"€ {gem_ink-nl_gem:+,.0f} vs NL".replace(",",".") if nl_gem else None)
+                    if med_ink:
+                        c2.metric("Mediaan gestandaardiseerd inkomen",
+                                  f"€ {med_ink:,}".replace(",","."),
+                                  delta=f"€ {med_ink-nl_med:+,.0f} vs NL".replace(",",".") if nl_med else None)
+                    c3, c4 = st.columns(2)
+                    if gem_best:
+                        c3.metric("Gem. besteedbaar inkomen",
+                                  f"€ {gem_best:,}".replace(",","."),
+                                  delta=f"€ {gem_best-nl_gbes:+,.0f} vs NL".replace(",",".") if nl_gbes else None)
+                    if med_best:
+                        c4.metric("Mediaan besteedbaar inkomen",
+                                  f"€ {med_best:,}".replace(",","."),
+                                  delta=f"€ {med_best-nl_mbes:+,.0f} vs NL".replace(",",".") if nl_mbes else None)
                     st.caption("Delta t.o.v. landelijk gemiddelde. Gemiddelde over postcodes in het gebied.")
 
-                    if col_inw and len(ink_res) > 1:
-                        ink_plot = [{"Postcode": p, "€": round(r.get(col_inw,0)*1000)}
-                                    for p,(r,_) in ink_res.items() if r and r.get(col_inw)]
+                    # Staafgrafiek mediaan per postcode
+                    if c_med and len(ink_res) > 1:
+                        ink_plot = [{"Postcode": p, "Mediaan inkomen (€)": round(r.get(c_med,0)*1000)}
+                                    for p,(r,_) in ink_res.items() if r and r.get(c_med)]
                         if ink_plot:
-                            ink_plot.sort(key=lambda x: x["€"], reverse=True)
-                            fig_ink = px.bar(pd.DataFrame(ink_plot), x="Postcode", y="€",
+                            ink_plot.sort(key=lambda x: x["Mediaan inkomen (€)"], reverse=True)
+                            fig_ink = px.bar(pd.DataFrame(ink_plot),
+                                             x="Postcode", y="Mediaan inkomen (€)",
                                              color_discrete_sequence=["#1D9E75"], height=280)
-                            if nl_inw:
-                                fig_ink.add_hline(y=nl_inw, line_dash="dash", line_color="#888780",
+                            if nl_med:
+                                fig_ink.add_hline(y=nl_med, line_dash="dash", line_color="#888780",
                                                   annotation_text="⌀ NL", annotation_position="right")
                             fig_ink.update_layout(
                                 plot_bgcolor="white", paper_bgcolor="white",
