@@ -16,6 +16,51 @@ BASE    = "https://opendata.cbs.nl/ODataApi/OData/83502NED"
 HH_BASE = "https://opendata.cbs.nl/ODataApi/OData/83505NED"
 HK_BASE = "https://opendata.cbs.nl/ODataApi/OData/85640NED"
 
+# ── Statische PC4 centroïden ───────────────────────────────────────────────────
+# Ankerpunten per 2-cijferig postcodeprefix (lat, lon)
+_ANCHORS = {
+    10:(52.37,4.90), 11:(52.37,4.89), 12:(52.38,4.87), 13:(52.37,5.22),
+    14:(52.37,4.84), 15:(52.44,4.83), 16:(52.46,4.79), 17:(52.50,4.80),
+    18:(52.50,4.73), 19:(52.47,4.66), 20:(52.38,4.64), 21:(52.39,4.64),
+    22:(52.25,4.53), 23:(52.17,4.47), 24:(52.17,4.42), 25:(52.07,4.32),
+    26:(52.07,4.28), 27:(52.07,4.38), 28:(52.07,4.40), 29:(51.97,4.28),
+    30:(51.92,4.48), 31:(51.90,4.46), 32:(51.92,4.40), 33:(51.88,4.54),
+    34:(51.87,4.68), 35:(51.85,4.35), 36:(51.87,4.60), 37:(51.88,4.76),
+    38:(51.82,4.65), 39:(51.82,4.43), 40:(51.91,5.00), 41:(51.87,4.93),
+    42:(51.89,4.58), 43:(51.65,3.90), 44:(51.50,3.85), 45:(51.53,4.47),
+    46:(51.57,4.55), 47:(51.60,4.62), 48:(51.57,4.48), 49:(51.52,4.46),
+    50:(51.57,5.08), 51:(51.57,5.09), 52:(51.43,5.48), 53:(51.45,5.50),
+    54:(51.52,5.17), 55:(51.42,5.48), 56:(51.50,5.62), 57:(51.70,5.30),
+    58:(51.73,5.32), 59:(51.43,6.10), 60:(51.85,5.87), 61:(51.85,5.88),
+    62:(50.85,5.68), 63:(51.20,5.98), 64:(51.52,5.98), 65:(51.85,5.88),
+    66:(51.97,5.93), 67:(51.97,5.92), 68:(51.97,6.00), 69:(52.00,6.20),
+    70:(52.00,6.20), 71:(52.17,6.15), 72:(52.22,6.18), 73:(52.22,6.90),
+    74:(52.22,6.22), 75:(52.22,6.90), 76:(52.52,6.10), 77:(52.52,6.11),
+    78:(52.50,6.10), 79:(52.50,6.48), 80:(52.52,6.10), 81:(52.50,6.09),
+    82:(52.52,5.47), 83:(52.30,5.55), 84:(52.17,5.40), 85:(52.07,5.12),
+    86:(52.08,5.12), 87:(52.20,5.45), 88:(52.22,5.50), 89:(52.10,5.12),
+    90:(53.22,6.57), 91:(53.22,6.57), 92:(52.75,6.92), 93:(52.85,6.35),
+    94:(52.87,6.55), 95:(53.10,6.88), 96:(53.32,6.30), 97:(53.20,5.75),
+    98:(53.20,5.72), 99:(52.93,5.85),
+}
+
+def _build_centroids():
+    c = {}
+    for pc_int in range(1000, 10000):
+        pc = str(pc_int)
+        prefix = int(pc[:2])
+        if prefix in _ANCHORS:
+            base_lat, base_lon = _ANCHORS[prefix]
+            suffix = int(pc[2:])
+            c[pc] = (
+                round(base_lat + (suffix // 10 - 5) * 0.003, 4),
+                round(base_lon + (suffix %  10 - 5) * 0.004, 4),
+            )
+    return c
+
+PC4_CENTROIDS = _build_centroids()
+
+# ── CBS labels ─────────────────────────────────────────────────────────────────
 LABEL_MAP = {
     "0 tot 5 jaar":"0-5","5 tot 10 jaar":"5-10","10 tot 15 jaar":"10-15",
     "15 tot 20 jaar":"15-20","20 tot 25 jaar":"20-25","25 tot 30 jaar":"25-30",
@@ -49,7 +94,7 @@ HH_TYPEN = {
 # ── Session state ──────────────────────────────────────────────────────────────
 for k, v in [
     ("gebied", None), ("gevonden_pcs", []),
-    ("kaart_center", [52.37, 4.90]), ("kaart_zoom", 13),
+    ("kaart_center", [52.15, 5.30]), ("kaart_zoom", 8),
     ("gebied_label", ""), ("analyse_klaar", False),
 ]:
     if k not in st.session_state:
@@ -153,114 +198,7 @@ def get_hk_data(pc_key, periode_key, gb_totaal, gsl_key, hk_map):
             result[HK_GEWENST[titel]] = row.get("Bevolking_1") or 0
     return result
 
-# ── Postcode centroïden via PDOK WFS met bbox ──────────────────────────────────
-@st.cache_data(ttl=3600)
-def get_pc4_in_bbox(min_lon, min_lat, max_lon, max_lat):
-    """
-    Haal PC4-centroïden op uit PDOK WFS binnen een bounding box.
-    Geeft dict terug: {pc4: (lat, lon)}
-    """
-    bbox = f"{min_lon},{min_lat},{max_lon},{max_lat}"
-    url = (
-        "https://service.pdok.nl/cbs/gebiedsindelingen/2024/wfs/v1_0"
-        f"?service=WFS&version=2.0.0&request=GetFeature"
-        f"&typeName=postcode4_gegeneraliseerd&outputFormat=json"
-        f"&bbox={bbox}&count=500"
-    )
-    try:
-        r = requests.get(url, timeout=20)
-        if r.status_code != 200:
-            return {}
-        features = r.json().get("features", [])
-        centroids = {}
-        for f in features:
-            pc = str(f["properties"].get("postcode4","")).strip()
-            if not pc or not pc.isdigit(): continue
-            geom = f.get("geometry", {})
-            gtype = geom.get("type","")
-            if gtype == "Point":
-                lon, lat = geom["coordinates"]
-                centroids[pc] = (lat, lon)
-            elif gtype in ("Polygon","MultiPolygon"):
-                all_c = []
-                def extract(c):
-                    if isinstance(c[0], list):
-                        for s in c: extract(s)
-                    else:
-                        all_c.append(c)
-                extract(geom["coordinates"])
-                if all_c:
-                    lons = [c[0] for c in all_c]
-                    lats = [c[1] for c in all_c]
-                    centroids[pc] = (sum(lats)/len(lats), sum(lons)/len(lons))
-        return centroids
-    except Exception:
-        return {}
-
-@st.cache_data(ttl=3600)
-def get_pc4_via_pdok_suggest(min_lon, min_lat, max_lon, max_lat):
-    """
-    Fallback: haal postcodes op via PDOK locatieserver suggest met bbox.
-    """
-    try:
-        # Bereken centerpunt en zoek postcodes in de buurt
-        center_lat = (min_lat + max_lat) / 2
-        center_lon = (min_lon + max_lon) / 2
-        r = requests.get(
-            "https://api.pdok.nl/bzk/locatieserver/search/v3_1/free",
-            params={
-                "q": "*",
-                "fq": [
-                    "type:postcode",
-                    f"centroide_ll:[{min_lat},{min_lon} TO {max_lat},{max_lon}]"
-                ],
-                "fl": "weergavenaam,centroide_ll",
-                "rows": 200,
-            },
-            timeout=15
-        )
-        if r.status_code != 200:
-            return {}
-        centroids = {}
-        for doc in r.json().get("response",{}).get("docs",[]):
-            naam = doc.get("weergavenaam","")
-            centroide = doc.get("centroide_ll","")
-            m_pc = re.search(r'\b(\d{4})[A-Z]{2}\b', naam)
-            m_coord = re.search(r'POINT\(([0-9.]+)\s+([0-9.]+)\)', centroide)
-            if m_pc and m_coord:
-                pc = m_pc.group(1)
-                lon_c, lat_c = float(m_coord.group(1)), float(m_coord.group(2))
-                centroids[pc] = (lat_c, lon_c)
-        return centroids
-    except Exception:
-        return {}
-
-# ── Geometrie helpers ──────────────────────────────────────────────────────────
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371000
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlam = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlam/2)**2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-
-def punt_in_polygoon(lat, lon, polygon_coords):
-    x, y = lon, lat
-    n = len(polygon_coords)
-    inside = False
-    j = n - 1
-    for i in range(n):
-        xi, yi = polygon_coords[i]
-        xj, yj = polygon_coords[j]
-        if ((yi > y) != (yj > y)) and (x < (xj-xi)*(y-yi)/(yj-yi+1e-10) + xi):
-            inside = not inside
-        j = i
-    return inside
-
-def meter_naar_graad_lat(m): return m / 111320
-def meter_naar_graad_lon(m, lat): return m / (111320 * math.cos(math.radians(lat)))
-
-# ── PDOK geocode ───────────────────────────────────────────────────────────────
+# ── PDOK geocode (voor zoekfunctie) ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def geocode(zoekterm):
     try:
@@ -280,6 +218,26 @@ def geocode(zoekterm):
     except Exception:
         pass
     return None, None, None
+
+# ── Geometrie helpers ──────────────────────────────────────────────────────────
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    a = math.sin((phi2-phi1)/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(math.radians(lon2-lon1)/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+
+def punt_in_polygoon(lat, lon, polygon_coords):
+    x, y, inside, j = lon, lat, False, len(polygon_coords)-1
+    for i in range(len(polygon_coords)):
+        xi, yi = polygon_coords[i]
+        xj, yj = polygon_coords[j]
+        if ((yi>y) != (yj>y)) and (x < (xj-xi)*(y-yi)/(yj-yi+1e-10)+xi):
+            inside = not inside
+        j = i
+    return inside
+
+def meter_naar_graad_lat(m): return m / 111320
+def meter_naar_graad_lon(m, lat): return m / (111320 * math.cos(math.radians(lat)))
 
 # ── Rekenhulpen ────────────────────────────────────────────────────────────────
 def combineer(verds):
@@ -302,11 +260,15 @@ with st.spinner("Metadata laden..."):
     hh_per_key, hh_map_meta, hh_pc_map = get_hh_meta()
     hk_per_key, hk_map_meta, gb_totaal, gsl_key, hk_pc_map = get_hk_meta()
 
+# Filter PC4_CENTROIDS op alleen bekende CBS-postcodes
+bekende_pcs = set(pc_key_map.keys())
+PC4_CENTROIDS_FILTERED = {pc: v for pc, v in PC4_CENTROIDS.items() if pc in bekende_pcs}
+
 # ── Zijbalk ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("📍 Locatie zoeken")
     zoek_input = st.text_input("Adres, postcode of plaatsnaam",
-                               placeholder="bijv. Grote Markt Haarlem")
+                               placeholder="bijv. Kalverstraat Amsterdam")
 
     if st.button("🔍 Zoek & zoom in", use_container_width=True):
         if zoek_input:
@@ -322,11 +284,11 @@ with st.sidebar:
     st.header("✏️ Tekentools")
     st.markdown("""
 **Op de kaart (linksboven):**
-- ⬛ **Polygoon** — klik punten, dubbelklik om te sluiten
+- ⬛ **Polygoon** — klik punten, dubbelklik sluiten
 - 🔴 **Cirkel** — klik middelpunt, sleep voor straal
 - 🗑️ **Prullenbak** — wis het gebied
 
-Na het tekenen: klik **▶ Analyseer gebied** hieronder.
+Klik daarna op **▶ Analyseer** hieronder.
     """)
 
     analyseer_btn = st.button("▶ Analyseer gebied", type="primary",
@@ -335,9 +297,8 @@ Na het tekenen: klik **▶ Analyseer gebied** hieronder.
     st.divider()
     max_pcs = st.slider("Max. postcodes", 5, 40, 15,
                         help="Meer = vollediger maar trager")
-
-    st.divider()
     st.caption(f"Peiljaar: {periode_title}")
+    st.caption(f"{len(PC4_CENTROIDS_FILTERED):,} postcodes beschikbaar")
 
 # ── Kaart ──────────────────────────────────────────────────────────────────────
 col_kaart, col_result = st.columns([3, 2], gap="medium")
@@ -349,24 +310,12 @@ with col_kaart:
         tiles="CartoDB positron",
     )
 
-    # Teken-plugin — cirkel toont straal in meters
     Draw(
         draw_options={
-            "polyline":     False,
-            "rectangle":    False,
-            "marker":       False,
-            "circlemarker": False,
-            "polygon": {
-                "allowIntersection": False,
-                "showArea": True,
-                "metric": True,
-            },
-            "circle": {
-                "showRadius": True,
-                "metric": True,
-                "feet": False,
-                "nautic": False,
-            },
+            "polyline": False, "rectangle": False,
+            "marker": False, "circlemarker": False,
+            "polygon": {"allowIntersection": False, "showArea": True, "metric": True},
+            "circle": {"showRadius": True, "metric": True, "feet": False},
         },
         edit_options={"edit": True, "remove": True},
         position="topleft",
@@ -377,48 +326,35 @@ with col_kaart:
         g = st.session_state.gebied
         if g["type"] == "cirkel":
             folium.Circle(
-                location=[g["lat"], g["lon"]],
-                radius=g["straal"],
-                color="#1D9E75", weight=2,
-                fill=True, fill_opacity=0.12,
-                tooltip=f"⭕ Straal: {g['straal']:.0f} m",
+                location=[g["lat"], g["lon"]], radius=g["straal"],
+                color="#1D9E75", weight=2, fill=True, fill_opacity=0.12,
             ).add_to(m)
-            # Straal label
             folium.Marker(
                 location=[g["lat"], g["lon"]],
                 icon=folium.DivIcon(
-                    html=f'<div style="background:white;padding:3px 6px;border-radius:4px;'
-                         f'border:1px solid #1D9E75;font-size:12px;font-weight:600;'
-                         f'color:#1D9E75;white-space:nowrap;">⭕ {g["straal"]:.0f} m</div>',
-                    icon_size=(120, 24),
-                    icon_anchor=(60, 12),
+                    html=(f'<div style="background:white;padding:3px 8px;border-radius:4px;'
+                          f'border:1.5px solid #1D9E75;font-size:12px;font-weight:600;'
+                          f'color:#1D9E75;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.2)">'
+                          f'⭕ {g["straal"]:.0f} m</div>'),
+                    icon_size=(110, 26), icon_anchor=(55, 13),
                 )
             ).add_to(m)
         elif g["type"] == "polygoon":
-            coords_latlon = [[c[1],c[0]] for c in g["coords"]]
             folium.Polygon(
-                locations=coords_latlon,
-                color="#1D9E75", weight=2,
-                fill=True, fill_opacity=0.12,
-                tooltip="⬜ Getekend polygoon",
+                locations=[[c[1],c[0]] for c in g["coords"]],
+                color="#1D9E75", weight=2, fill=True, fill_opacity=0.12,
             ).add_to(m)
 
-    # Gevonden postcodes als markers
-    if st.session_state.gevonden_pcs:
-        for pc, lat_c, lon_c in st.session_state.gevonden_pcs:
-            folium.CircleMarker(
-                location=[lat_c, lon_c],
-                radius=6,
-                color="#1D9E75",
-                fill=True, fill_color="#1D9E75",
-                fill_opacity=0.8,
-                tooltip=f"📮 {pc}",
-            ).add_to(m)
+    # Gevonden postcodes
+    for pc, lat_c, lon_c in st.session_state.gevonden_pcs:
+        folium.CircleMarker(
+            location=[lat_c, lon_c], radius=6,
+            color="#1D9E75", fill=True, fill_color="#1D9E75",
+            fill_opacity=0.8, tooltip=f"📮 {pc}",
+        ).add_to(m)
 
     kaart_output = st_folium(
-        m,
-        width="100%",
-        height=580,
+        m, width="100%", height=580,
         returned_objects=["all_drawings"],
         key="tekenkaart",
     )
@@ -432,12 +368,10 @@ with col_kaart:
         props = laatste.get("properties", {})
 
         if gtype == "Point" and props.get("radius"):
-            straal = float(props["radius"])
             lon_c, lat_c = geom["coordinates"]
-            nieuw = {"type": "cirkel", "lat": lat_c, "lon": lon_c, "straal": straal}
+            nieuw = {"type":"cirkel","lat":lat_c,"lon":lon_c,"straal":float(props["radius"])}
         elif gtype == "Polygon":
-            coords = geom["coordinates"][0]
-            nieuw = {"type": "polygoon", "coords": coords}
+            nieuw = {"type":"polygoon","coords":geom["coordinates"][0]}
         else:
             nieuw = None
 
@@ -445,76 +379,48 @@ with col_kaart:
             st.session_state.gebied = nieuw
             st.session_state.analyse_klaar = False
 
-# ── Analyse bij klik op knop ───────────────────────────────────────────────────
-if analyseer_btn and st.session_state.gebied:
-    g = st.session_state.gebied
-
-    # Bereken bbox voor WFS query
-    if g["type"] == "cirkel":
-        lat_c, lon_c, straal = g["lat"], g["lon"], g["straal"]
-        marge = straal * 1.2
-        min_lat = lat_c - meter_naar_graad_lat(marge)
-        max_lat = lat_c + meter_naar_graad_lat(marge)
-        min_lon = lon_c - meter_naar_graad_lon(marge, lat_c)
-        max_lon = lon_c + meter_naar_graad_lon(marge, lat_c)
-        label = f"Cirkel {straal/1000:.1f} km"
+# ── Analyse ────────────────────────────────────────────────────────────────────
+if analyseer_btn:
+    if not st.session_state.gebied:
+        st.warning("Teken eerst een gebied op de kaart.")
     else:
-        coords = g["coords"]
-        lats = [c[1] for c in coords]
-        lons = [c[0] for c in coords]
-        min_lat, max_lat = min(lats), max(lats)
-        min_lon, max_lon = min(lons), max(lons)
-        label = "Getekend gebied"
+        g = st.session_state.gebied
 
-    with st.spinner("Postcodes ophalen via PDOK..."):
-        centroids = get_pc4_in_bbox(min_lon, min_lat, max_lon, max_lat)
-        if not centroids:
-            # Fallback
-            centroids = get_pc4_via_pdok_suggest(min_lon, min_lat, max_lon, max_lat)
-
-    if not centroids:
-        st.error("Kon geen postcodes ophalen. Controleer je internetverbinding.")
-    else:
-        # Filter op exacte geometrie
         if g["type"] == "cirkel":
             gevonden = [
                 (pc, lat, lon)
-                for pc, (lat, lon) in centroids.items()
+                for pc, (lat, lon) in PC4_CENTROIDS_FILTERED.items()
                 if haversine(g["lat"], g["lon"], lat, lon) <= g["straal"]
             ]
+            st.session_state.gebied_label = f"Cirkel ⌀ {g['straal']*2/1000:.1f} km"
         else:
             gevonden = [
                 (pc, lat, lon)
-                for pc, (lat, lon) in centroids.items()
+                for pc, (lat, lon) in PC4_CENTROIDS_FILTERED.items()
                 if punt_in_polygoon(lat, lon, g["coords"])
             ]
+            st.session_state.gebied_label = "Getekend gebied"
 
-        st.session_state.gevonden_pcs = sorted(gevonden, key=lambda x: x[0])
-        st.session_state.gebied_label = label
-        st.session_state.analyse_klaar = True
-        st.rerun()
-
-elif analyseer_btn and not st.session_state.gebied:
-    with col_kaart:
-        st.warning("Teken eerst een gebied op de kaart.")
+        if not gevonden:
+            st.warning("Geen postcodes gevonden in dit gebied. Zoom verder in en teken een kleiner gebied.")
+        else:
+            st.session_state.gevonden_pcs  = sorted(gevonden, key=lambda x: x[0])
+            st.session_state.analyse_klaar = True
+            st.rerun()
 
 # ── Resultaten ─────────────────────────────────────────────────────────────────
 with col_result:
-    if not st.session_state.gevonden_pcs or not st.session_state.analyse_klaar:
+    if not st.session_state.analyse_klaar or not st.session_state.gevonden_pcs:
         st.markdown("""
-### 👈 Hoe te gebruiken
+### 👈 Aan de slag
 
-1. **Zoek** een locatie in de zijbalk (adres of postcode)
-2. **Zoom in** op het gewenste gebied
-3. **Teken** een cirkel of polygoon op de kaart
-4. Klik op **▶ Analyseer gebied** in de zijbalk
-5. De demografische analyse verschijnt hier
+1. **Zoek** een locatie links (bijv. een straat of postcode)
+2. **Zoom in** op je gewenste gebied
+3. **Teken** een cirkel 🔴 of polygoon ⬛
+4. Klik **▶ Analyseer gebied**
 
 ---
-**Cirkel:** klik op het middelpunt, sleep naar buiten.
-De straal in meters is zichtbaar op de kaart.
-
-**Polygoon:** klik hoekpunten, dubbelklik om te sluiten.
+**Tip voor retailers:** Teken een cirkel van 1–2 km rondom een (potentiële) winkellocatie voor een catchment area analyse.
         """)
     else:
         pcs_data = st.session_state.gevonden_pcs
@@ -522,10 +428,7 @@ De straal in meters is zichtbaar op de kaart.
         pcs_list = [p[0] for p in pcs_data]
 
         st.subheader(f"📊 {label}")
-        st.caption(
-            f"{len(pcs_list)} postcodes: "
-            f"{', '.join(pcs_list[:6])}{'…' if len(pcs_list)>6 else ''}"
-        )
+        st.caption(f"{len(pcs_list)} postcodes: {', '.join(pcs_list[:8])}{'…' if len(pcs_list)>8 else ''}")
 
         pcs_te_laden = pcs_list[:max_pcs]
         if len(pcs_list) > max_pcs:
@@ -570,7 +473,6 @@ De straal in meters is zichtbaar op de kaart.
                 c3,c4 = st.columns(2)
                 c3.metric("Aandeel 65+",  f"{oud/tot*100:.1f}%")
                 c4.metric("Aandeel 0-25", f"{jong/tot*100:.1f}%")
-
                 df = pd.DataFrame([
                     {"Leeftijdsgroep": lbl, "%": round(pct(verd_agg).get(lbl,0),1)}
                     for lbl in LABELS_VOLGORDE
@@ -595,18 +497,13 @@ De straal in meters is zichtbaar op de kaart.
                     c2.metric("Gem. grootte", f"{hh_agg.get('__grootte',0):.1f} pers.")
                     pie = {k:v for k,v in hh_agg.items() if not k.startswith("__") and v>0}
                     if pie:
-                        tot_pie = sum(pie.values())
-                        fig_p = px.pie(
-                            names=list(pie.keys()),
-                            values=list(pie.values()),
-                            color_discrete_sequence=["#1D9E75","#185FA5","#BA7517"],
-                            hole=0.45, height=260,
-                        )
-                        fig_p.update_layout(
-                            margin=dict(t=8,b=8,l=8,r=8),
-                            legend=dict(font=dict(size=10)),
-                        )
+                        fig_p = px.pie(names=list(pie.keys()), values=list(pie.values()),
+                                       color_discrete_sequence=["#1D9E75","#185FA5","#BA7517"],
+                                       hole=0.45, height=250)
+                        fig_p.update_layout(margin=dict(t=8,b=8,l=8,r=8),
+                                            legend=dict(font=dict(size=10)))
                         st.plotly_chart(fig_p, use_container_width=True)
+                        tot_pie = sum(pie.values())
                         for k,v in pie.items():
                             st.write(f"**{k}:** {v/tot_pie*100:.1f}%")
 
@@ -617,8 +514,8 @@ De straal in meters is zichtbaar op de kaart.
                     tot_hk = hk_agg.get("Totaal",1) or 1
                     pct_nl = hk_agg.get("Nederland",0)/tot_hk*100
                     c1,c2 = st.columns(2)
-                    c1.metric("Herkomst NL",        f"{pct_nl:.1f}%")
-                    c2.metric("Herkomst buiten NL",  f"{100-pct_nl:.1f}%")
+                    c1.metric("Herkomst NL",       f"{pct_nl:.1f}%")
+                    c2.metric("Herkomst buiten NL", f"{100-pct_nl:.1f}%")
                     hk_df = pd.DataFrame([
                         {"Herkomst": cat, "%": round(hk_agg.get(cat,0)/tot_hk*100,1)}
                         for cat in HK_CAT if hk_agg.get(cat,0)>0
@@ -635,4 +532,4 @@ De straal in meters is zichtbaar op de kaart.
                         st.plotly_chart(fig_h, use_container_width=True)
 
 st.divider()
-st.caption("Data: CBS StatLine (CC BY 4.0) | Geodata: PDOK Locatieserver | App gebouwd met Streamlit")
+st.caption("Data: CBS StatLine (CC BY 4.0) | Geodata: PDOK | App gebouwd met Streamlit")
