@@ -318,48 +318,61 @@ def get_hk_data(pc_key, periode_key, gb_totaal, gsl_key, hk_map):
 # inkomen wordt direct in tab4 opgehaald
 
 # ── CBS inkomen ───────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600)
-def get_inkomen_meta():
-    """Haal kolomnamen en periode eenmalig op — exacte kolomnamen uit 85064NED."""
+# Exacte kolomnamen uit 85064NED (vastgesteld via debug)
+INK_COLS = {
+    "gem_ink":  "GemiddeldGestandaardiseerdInkomen_3",
+    "med_ink":  "MediaanGestandaardiseerdInkomen_4",
+    "gem_best": "GemiddeldBesteedbaarInkomen_5",
+    "med_best": "MediaanBesteedbaarInkomen_6",
+}
+
+@st.cache_data(ttl=7200, show_spinner="Inkomen laden (eenmalig)...")
+def get_alle_inkomen():
+    """
+    Laad ALLE inkomensdata van 85064NED voor het meest recente jaar.
+    Pagineert handmatig via $skip omdat odata.nextLink niet altijd werkt.
+    Retourneert dict: pc4 -> {col: waarde}
+    """
+    # Haal meest recente periode op
     perioden    = fetch(f"{INK_BASE}/Perioden?$format=json")
     periode_key = perioden[-1]["Key"]
-    # Exacte kolomnamen zoals zichtbaar in DataProperties
-    return periode_key, {
-        "gem_ink":    "GemiddeldGestandaardiseerdInkomen_3",
-        "med_ink":    "MediaanGestandaardiseerdInkomen_4",
-        "gem_best":   "GemiddeldBesteedbaarInkomen_5",
-        "med_best":   "MediaanBesteedbaarInkomen_6",
-    }
 
-@st.cache_data(ttl=3600)
-def get_regios_inkomen():
-    """
-    Haal alle postcode-RegioS keys op uit 85064NED via paginering.
-    Postcodes hebben key startend met 'PO'.
-    """
-    periode_key, cols = get_inkomen_meta()
-    # Haal alle rijen op voor het meest recente jaar — fetch() pagineert via nextLink
-    alle = fetch(
-        f"{INK_BASE}/TypedDataSet?$format=json"
-        f"&$filter=Perioden eq '{periode_key}'"
-        f"&$select=RegioS,{','.join(cols.values())}"
-    )
-    # Bouw dict: pc4 -> rij data
+    select = "RegioS," + ",".join(INK_COLS.values())
     pc_data = {}
-    for row in alle:
-        regio = row.get("RegioS","").strip()
-        if regio.startswith("PO") and len(regio) == 6:
-            pc4 = regio[2:]  # 'PO1721' -> '1721'
-            if pc4.isdigit():
-                pc_data[pc4] = row
-    return pc_data, cols
+    skip = 0
+    batch = 500
 
-@st.cache_data(ttl=3600)
+    while True:
+        url = (f"{INK_BASE}/TypedDataSet?$format=json"
+               f"&$filter=Perioden eq '{periode_key}'"
+               f"&$select={select}"
+               f"&$top={batch}&$skip={skip}")
+        try:
+            r = requests.get(url, timeout=30)
+            if r.status_code != 200:
+                break
+            d = r.json()
+            rows = d.get("value", [])
+            if not rows:
+                break
+            for row in rows:
+                regio = row.get("RegioS", "").strip()
+                # Postcodes hebben formaat 'PO' + 4 cijfers
+                if regio.startswith("PO") and regio[2:].isdigit() and len(regio[2:]) == 4:
+                    pc_data[regio[2:]] = row
+            if len(rows) < batch:
+                break  # laatste pagina
+            skip += batch
+        except Exception:
+            break
+
+    return pc_data, periode_key
+
+@st.cache_data(ttl=7200)
 def get_inkomen(pc):
-    """Haal inkomen op voor één postcode uit de gecachede dataset."""
-    pc_data, cols = get_regios_inkomen()
-    row = pc_data.get(pc)
-    return row, cols
+    """Haal inkomen op voor één postcode."""
+    pc_data, _ = get_alle_inkomen()
+    return pc_data.get(pc), INK_COLS
 
 # ── PDOK geocode (voor zoekfunctie) ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
@@ -958,10 +971,10 @@ with col_result:
                     st.info("Geen inkomensdata beschikbaar voor dit gebied.")
                 else:
                     _, cols = next(iter(ink_res.values()))
-                    c_gem  = cols.get("gem_ink")
-                    c_med  = cols.get("med_ink")
-                    c_gbes = cols.get("gem_best")
-                    c_mbes = cols.get("med_best")
+                    c_gem  = INK_COLS.get("gem_ink")
+                    c_med  = INK_COLS.get("med_ink")
+                    c_gbes = INK_COLS.get("gem_best")
+                    c_mbes = INK_COLS.get("med_best")
 
                     def avg_ink(col):
                         if not col: return None
@@ -974,7 +987,7 @@ with col_result:
                     med_best = avg_ink(c_mbes)
 
                     # NL benchmark
-                    nl_row, nl_cols = get_inkomen("NL01")
+                    nl_row, _ = get_inkomen("NL01")
                     nl_gem  = round(nl_row.get(c_gem,  0)*1000) if nl_row and c_gem  else None
                     nl_med  = round(nl_row.get(c_med,  0)*1000) if nl_row and c_med  else None
                     nl_gbes = round(nl_row.get(c_gbes, 0)*1000) if nl_row and c_gbes else None
