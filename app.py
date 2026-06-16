@@ -332,48 +332,34 @@ def get_inkomen_meta():
     }
 
 @st.cache_data(ttl=3600)
-def get_inkomen(pc):
+def get_regios_inkomen():
     """
-    Haal inkomen op voor één postcode.
-    Omzeilt RegioS lookup — filtert TypedDataSet direct via UntypedDataSet
-    op basis van de postcode waarde in de RegioS kolom.
+    Haal alle postcode-RegioS keys op uit 85064NED via paginering.
+    Postcodes hebben key startend met 'PO'.
     """
     periode_key, cols = get_inkomen_meta()
-    select = "RegioS," + ",".join(cols.values())
+    # Haal alle rijen op voor het meest recente jaar — fetch() pagineert via nextLink
+    alle = fetch(
+        f"{INK_BASE}/TypedDataSet?$format=json"
+        f"&$filter=Perioden eq '{periode_key}'"
+        f"&$select=RegioS,{','.join(cols.values())}"
+    )
+    # Bouw dict: pc4 -> rij data
+    pc_data = {}
+    for row in alle:
+        regio = row.get("RegioS","").strip()
+        if regio.startswith("PO") and len(regio) == 6:
+            pc4 = regio[2:]  # 'PO1721' -> '1721'
+            if pc4.isdigit():
+                pc_data[pc4] = row
+    return pc_data, cols
 
-    # Probeer via UntypedDataSet — ondersteunt $filter op alle kolommen
-    # inclusief de RegioS waarde zelf
-    for po_key in [f"PO{pc}", f"PO{pc}  ", f"PO{pc}   ", f"PO{pc}    "]:
-        obs = fetch(
-            f"{INK_BASE}/TypedDataSet?$format=json"
-            f"&$filter=Perioden eq '{periode_key}' and RegioS eq '{po_key}'"
-            f"&$select={select}"
-        )
-        if obs:
-            return obs[0], cols
-
-    # Fallback: UntypedDataSet geeft strings terug — makkelijker te filteren
-    try:
-        r = requests.get(
-            f"{INK_BASE}/UntypedDataSet?$format=json"
-            f"&$filter=Perioden eq '{periode_key}'",
-            timeout=30
-        )
-        if r.status_code == 200:
-            rows = r.json().get("value", [])
-            for row in rows:
-                regio = row.get("RegioS","").strip()
-                if regio == f"PO{pc}" or regio.rstrip() == f"PO{pc}":
-                    # Converteer strings naar floats
-                    result = {}
-                    for k in cols.values():
-                        try: result[k] = float(row.get(k, 0) or 0)
-                        except: result[k] = 0
-                    return result, cols
-    except Exception:
-        pass
-
-    return None, cols
+@st.cache_data(ttl=3600)
+def get_inkomen(pc):
+    """Haal inkomen op voor één postcode uit de gecachede dataset."""
+    pc_data, cols = get_regios_inkomen()
+    row = pc_data.get(pc)
+    return row, cols
 
 # ── PDOK geocode (voor zoekfunctie) ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
@@ -968,57 +954,6 @@ with col_result:
                         st.plotly_chart(fig_h, use_container_width=True)
 
             with tab4:
-                # ── Debug: toon wat get_inkomen teruggeeft ──────────────────
-                if pcs_te_laden:
-                    test_pc = pcs_te_laden[0]
-                    with st.expander(f"🔍 Debug inkomen voor {test_pc}", expanded=True):
-                        try:
-                            # Stap 1: DataProperties
-                            props_test = fetch(f"{INK_BASE}/DataProperties?$format=json")
-                            col_inw_t  = next((p["Key"] for p in props_test if "PerInwoner"          in p["Key"] and "Gemiddeld" in p.get("Title","")), None)
-                            col_med_t  = next((p["Key"] for p in props_test if "Mediaan"             in p["Key"]), None)
-                            st.write(f"✅ DataProperties OK — col_inw: `{col_inw_t}`, col_med: `{col_med_t}`")
-                            st.write("**Alle beschikbare kolommen:**")
-                            for p in props_test:
-                                if p.get("Type") not in ("Dimension", "TimeDimension", "GeoDimension"):
-                                    st.write(f"  `{p['Key']}` — {p.get('Title','')}")
-
-                            # Stap 2: Perioden
-                            perioden_t    = fetch(f"{INK_BASE}/Perioden?$format=json")
-                            periode_key_t = perioden_t[-1]["Key"] if perioden_t else None
-                            st.write(f"✅ Periode: `{periode_key_t}`")
-
-                            # Stap 3: Probeer TypedDataSet direct met PO-keys
-                            st.write("**Direct TypedDataSet query:**")
-                            for po_try in [f"PO{test_pc}", f"PO{test_pc}  ", f"PO{test_pc}   "]:
-                                obs_try = fetch(
-                                    f"{INK_BASE}/TypedDataSet?$format=json"
-                                    f"&$filter=Perioden eq '{periode_key_t}' and RegioS eq '{po_try}'"
-                                    f"&$select=RegioS,{col_med_t}"
-                                )
-                                st.write(f"  Key `{po_try!r}`: {len(obs_try)} rijen {obs_try[0] if obs_try else ''}")
-                                if obs_try:
-                                    regio_key_t = po_try
-                                    break
-                            else:
-                                regio_key_t = None
-                                # Toon eerste rij van TypedDataSet om exacte RegioS waarde te zien
-                                sample = fetch(f"{INK_BASE}/TypedDataSet?$format=json&$filter=Perioden eq '{periode_key_t}'&$select=RegioS&$top=5")
-                                st.write("Eerste 5 RegioS waarden in TypedDataSet:")
-                                for s in sample:
-                                    st.write(f"  `{repr(s.get('RegioS',''))}`")
-
-                            # Stap 4: Data ophalen
-                            if regio_key_t and col_inw_t and periode_key_t:
-                                obs_t = fetch(f"{INK_BASE}/TypedDataSet?$format=json"
-                                              f"&$filter=Perioden eq '{periode_key_t}' and RegioS eq '{regio_key_t}'"
-                                              f"&$select={col_inw_t}")
-                                st.write(f"TypedDataSet resultaat: {len(obs_t)} rijen")
-                                if obs_t:
-                                    st.write(f"Data: {obs_t[0]}")
-                        except Exception as e:
-                            st.error(f"Fout: {e}")
-
                 if not ink_res:
                     st.info("Geen inkomensdata beschikbaar voor dit gebied.")
                 else:
