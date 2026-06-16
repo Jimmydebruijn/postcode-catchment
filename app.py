@@ -21,7 +21,8 @@ st.caption("Teken een cirkel of polygoon • Alle postcodes binnen het gebied wo
 BASE    = "https://opendata.cbs.nl/ODataApi/OData/83502NED"
 HH_BASE = "https://opendata.cbs.nl/ODataApi/OData/83505NED"
 HK_BASE  = "https://opendata.cbs.nl/ODataApi/OData/85640NED"
-INK_BASE = "https://opendata.cbs.nl/ODataApi/OData/85064NED"
+INK_BASE    = "https://opendata.cbs.nl/ODataApi/OData/85064NED"
+INK_BASE_V4 = "https://odata4.cbs.nl/CBS/85064NED"
 
 # ── Statische PC4 centroïden ───────────────────────────────────────────────────
 # Exacte centroïden voor alle bekende Nederlandse PC4-gebieden
@@ -329,39 +330,78 @@ INK_COLS = {
 @st.cache_data(ttl=7200, show_spinner="Inkomen laden (eenmalig)...")
 def get_alle_inkomen():
     """
-    Laad ALLE inkomensdata van 85064NED voor het meest recente jaar.
-    Pagineert handmatig via $skip omdat odata.nextLink niet altijd werkt.
-    Retourneert dict: pc4 -> {col: waarde}
+    Laad inkomensdata van 85064NED via twee strategieën:
+    1. OData v4 met directe postcode filter (snel)
+    2. OData v3 met $skip paginering als fallback (langzaam maar volledig)
     """
-    # Haal meest recente periode op
+    # Periode ophalen
     perioden    = fetch(f"{INK_BASE}/Perioden?$format=json")
     periode_key = perioden[-1]["Key"]
-
-    select = "RegioS," + ",".join(INK_COLS.values())
+    select_cols = ",".join(INK_COLS.values())
     pc_data = {}
+
+    # ── Strategie 1: OData v4 ──────────────────────────────────────────────────
+    # v4 ondersteunt wel filtering op dimensies
+    try:
+        # Haal RegioS codes op via v4
+        r_regio = requests.get(
+            f"{INK_BASE_V4}/RegioS?$filter=startswith(Key,'PO')&$select=Key,Title",
+            timeout=15
+        )
+        if r_regio.status_code == 200:
+            regio_items = r_regio.json().get("value", [])
+            if regio_items:
+                # Bouw postcode -> Key mapping
+                po_map = {}
+                for item in regio_items:
+                    k = item.get("Key","").strip()
+                    if k.startswith("PO") and len(k) >= 6:
+                        po_map[k[2:6]] = k
+
+                # Haal data op via v4 Observations endpoint
+                if po_map:
+                    r_obs = requests.get(
+                        f"{INK_BASE_V4}/Observations?"
+                        f"$filter=Perioden eq '{periode_key}' and RegioS in ({','.join(repr(v) for v in po_map.values())})"
+                        f"&$select=RegioS,{select_cols}",
+                        timeout=30
+                    )
+                    if r_obs.status_code == 200:
+                        for row in r_obs.json().get("value", []):
+                            regio = row.get("RegioS","").strip()
+                            if regio.startswith("PO") and regio[2:6].isdigit():
+                                pc_data[regio[2:6]] = row
+                        if pc_data:
+                            return pc_data, periode_key
+    except Exception:
+        pass
+
+    # ── Strategie 2: v3 $skip paginering ──────────────────────────────────────
+    # Postcodes staan na ~370 rijen (NL, landsdelen, provincies, COROP, gemeenten)
     skip = 0
     batch = 500
+    max_batches = 20  # max 10.000 rijen
 
-    while True:
-        url = (f"{INK_BASE}/TypedDataSet?$format=json"
-               f"&$filter=Perioden eq '{periode_key}'"
-               f"&$select={select}"
-               f"&$top={batch}&$skip={skip}")
+    for _ in range(max_batches):
         try:
-            r = requests.get(url, timeout=30)
+            r = requests.get(
+                f"{INK_BASE}/TypedDataSet?$format=json"
+                f"&$filter=Perioden eq '{periode_key}'"
+                f"&$select=RegioS,{select_cols}"
+                f"&$top={batch}&$skip={skip}",
+                timeout=30
+            )
             if r.status_code != 200:
                 break
-            d = r.json()
-            rows = d.get("value", [])
+            rows = r.json().get("value", [])
             if not rows:
                 break
             for row in rows:
-                regio = row.get("RegioS", "").strip()
-                # Postcodes hebben formaat 'PO' + 4 cijfers
-                if regio.startswith("PO") and regio[2:].isdigit() and len(regio[2:]) == 4:
+                regio = row.get("RegioS","").strip()
+                if regio.startswith("PO") and len(regio[2:]) == 4 and regio[2:].isdigit():
                     pc_data[regio[2:]] = row
             if len(rows) < batch:
-                break  # laatste pagina
+                break
             skip += batch
         except Exception:
             break
