@@ -21,8 +21,8 @@ st.caption("Teken een cirkel of polygoon • Alle postcodes binnen het gebied wo
 BASE    = "https://opendata.cbs.nl/ODataApi/OData/83502NED"
 HH_BASE = "https://opendata.cbs.nl/ODataApi/OData/83505NED"
 HK_BASE  = "https://opendata.cbs.nl/ODataApi/OData/85640NED"
-INK_BASE    = "https://opendata.cbs.nl/ODataApi/OData/85064NED"
-INK_BASE_V4 = "https://odata4.cbs.nl/CBS/85064NED"
+# Inkomen op gemeenteniveau via 85318NED (kerncijfers wijken en buurten)
+INK_BASE = "https://opendata.cbs.nl/ODataApi/OData/85318NED"
 
 # ── Statische PC4 centroïden ───────────────────────────────────────────────────
 # Exacte centroïden voor alle bekende Nederlandse PC4-gebieden
@@ -319,100 +319,67 @@ def get_hk_data(pc_key, periode_key, gb_totaal, gsl_key, hk_map):
 # inkomen wordt direct in tab4 opgehaald
 
 # ── CBS inkomen ───────────────────────────────────────────────────────────────
-# Exacte kolomnamen uit 85064NED (vastgesteld via debug)
+# Inkomen + uitkering + woning kolommen uit 85318NED (vastgesteld via debug)
 INK_COLS = {
-    "gem_ink":  "GemiddeldGestandaardiseerdInkomen_3",
-    "med_ink":  "MediaanGestandaardiseerdInkomen_4",
-    "gem_best": "GemiddeldBesteedbaarInkomen_5",
-    "med_best": "MediaanBesteedbaarInkomen_6",
+    "gem_inw":   "GemiddeldInkomenPerInwoner_72",
+    "gem_ontv":  "GemiddeldInkomenPerInkomensontvanger_71",
+    "laag_ink":  "k_40PersonenMetLaagssteInkomen_73",
+    "uitk_bijstand": "PersonenPerSoortUitkeringBijstand_83",
+    "uitk_ao":       "PersonenPerSoortUitkeringAO_84",
+    "uitk_ww":       "PersonenPerSoortUitkeringWW_85",
+    "uitk_aow":      "PersonenPerSoortUitkeringAOW_86",
+    "koop":      "Koopwoningen_40",
+    "huur_tot":  "HuurwoningenTotaal_41",
 }
 
-@st.cache_data(ttl=7200, show_spinner="Inkomen laden (eenmalig)...")
-def get_alle_inkomen():
-    """
-    Laad inkomensdata van 85064NED via twee strategieën:
-    1. OData v4 met directe postcode filter (snel)
-    2. OData v3 met $skip paginering als fallback (langzaam maar volledig)
-    """
-    # Periode ophalen
-    perioden    = fetch(f"{INK_BASE}/Perioden?$format=json")
-    periode_key = perioden[-1]["Key"]
-    select_cols = ",".join(INK_COLS.values())
-    pc_data = {}
+@st.cache_data(ttl=3600)
+def get_ink_periode():
+    perioden = fetch(f"{INK_BASE}/Perioden?$format=json")
+    return perioden[-1]["Key"] if perioden else "2022JJ00"
 
-    # ── Strategie 1: OData v4 ──────────────────────────────────────────────────
-    # v4 ondersteunt wel filtering op dimensies
+@st.cache_data(ttl=3600)
+def get_gemeente_code(lat, lon):
+    """Haal gemeentecode op via PDOK reverse geocode."""
     try:
-        # Haal RegioS codes op via v4
-        r_regio = requests.get(
-            f"{INK_BASE_V4}/RegioS?$filter=startswith(Key,'PO')&$select=Key,Title",
-            timeout=15
+        r = requests.get(
+            "https://api.pdok.nl/bzk/locatieserver/search/v3_1/reverse",
+            params={"lat": lat, "lon": lon, "type": "gemeente", "rows": 1,
+                    "fl": "gemeentecode,weergavenaam"},
+            timeout=6
         )
-        if r_regio.status_code == 200:
-            regio_items = r_regio.json().get("value", [])
-            if regio_items:
-                # Bouw postcode -> Key mapping
-                po_map = {}
-                for item in regio_items:
-                    k = item.get("Key","").strip()
-                    if k.startswith("PO") and len(k) >= 6:
-                        po_map[k[2:6]] = k
-
-                # Haal data op via v4 Observations endpoint
-                if po_map:
-                    r_obs = requests.get(
-                        f"{INK_BASE_V4}/Observations?"
-                        f"$filter=Perioden eq '{periode_key}' and RegioS in ({','.join(repr(v) for v in po_map.values())})"
-                        f"&$select=RegioS,{select_cols}",
-                        timeout=30
-                    )
-                    if r_obs.status_code == 200:
-                        for row in r_obs.json().get("value", []):
-                            regio = row.get("RegioS","").strip()
-                            if regio.startswith("PO") and regio[2:6].isdigit():
-                                pc_data[regio[2:6]] = row
-                        if pc_data:
-                            return pc_data, periode_key
+        if r.status_code == 200:
+            docs = r.json().get("response",{}).get("docs",[])
+            if docs:
+                code = docs[0].get("gemeentecode","")
+                naam = docs[0].get("weergavenaam","").replace("Gemeente ","")
+                return f"GM{code}", naam
     except Exception:
         pass
+    return None, None
 
-    # ── Strategie 2: v3 $skip paginering ──────────────────────────────────────
-    # Postcodes staan na ~370 rijen (NL, landsdelen, provincies, COROP, gemeenten)
-    skip = 0
-    batch = 500
-    max_batches = 20  # max 10.000 rijen
+@st.cache_data(ttl=3600)
+def get_inkomen_gemeente(gm_code):
+    """Haal inkomen op voor één gemeente uit 85318NED."""
+    per_key = get_ink_periode()
+    select  = ",".join(INK_COLS.values())
+    obs = fetch(
+        f"{INK_BASE}/TypedDataSet?$format=json"
+        f"&$filter=Perioden eq '{per_key}' and WijkenEnBuurten eq '{gm_code}'"
+        f"&$select=WijkenEnBuurten,{select}"
+    )
+    return obs[0] if obs else None
 
-    for _ in range(max_batches):
-        try:
-            r = requests.get(
-                f"{INK_BASE}/TypedDataSet?$format=json"
-                f"&$filter=Perioden eq '{periode_key}'"
-                f"&$select=RegioS,{select_cols}"
-                f"&$top={batch}&$skip={skip}",
-                timeout=30
-            )
-            if r.status_code != 200:
-                break
-            rows = r.json().get("value", [])
-            if not rows:
-                break
-            for row in rows:
-                regio = row.get("RegioS","").strip()
-                if regio.startswith("PO") and len(regio[2:]) == 4 and regio[2:].isdigit():
-                    pc_data[regio[2:]] = row
-            if len(rows) < batch:
-                break
-            skip += batch
-        except Exception:
-            break
-
-    return pc_data, periode_key
-
-@st.cache_data(ttl=7200)
-def get_inkomen(pc):
-    """Haal inkomen op voor één postcode."""
-    pc_data, _ = get_alle_inkomen()
-    return pc_data.get(pc), INK_COLS
+@st.cache_data(ttl=3600)
+def get_inkomen_nl():
+    """Haal NL-totaal inkomen op."""
+    per_key = get_ink_periode()
+    select  = ",".join(INK_COLS.values())
+    obs = fetch(
+        f"{INK_BASE}/TypedDataSet?$format=json"
+        f"&$filter=Perioden eq '{per_key}' and WijkenEnBuurten eq 'NL00  '"
+        f"&$select=WijkenEnBuurten,{select}"
+    )
+    return obs[0] if obs else None
 
 # ── PDOK geocode (voor zoekfunctie) ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
@@ -802,7 +769,7 @@ with col_result:
             st.info(f"Analyse op {max_pcs} van de {len(pcs_list)} postcodes.")
 
         with st.spinner(f"CBS data ophalen voor {len(pcs_te_laden)} postcodes..."):
-            verdelingen, hh_res, hk_res, ink_res = {}, {}, {}, {}
+            verdelingen, hh_res, hk_res = {}, {}, {}
             prog = st.progress(0)
             for i, pc in enumerate(pcs_te_laden):
                 prog.progress((i+1)/len(pcs_te_laden), text=f"Postcode {pc}...")
@@ -818,8 +785,6 @@ with col_result:
                 if hk_key:
                     d = get_hk_data(hk_key, hk_per_key, gb_totaal, gsl_key, hk_map_meta)
                     if d: hk_res[pc] = d
-                ink_row, ink_cols_map = get_inkomen(pc)
-                if ink_row: ink_res[pc] = (ink_row, ink_cols_map)
 
             # Nederland benchmark — één call per tabel
             nl_leeftijd_key = pc_key_map.get("Nederland")
@@ -1007,72 +972,126 @@ with col_result:
                         st.plotly_chart(fig_h, use_container_width=True)
 
             with tab4:
-                if not ink_res:
-                    st.info("Geen inkomensdata beschikbaar voor dit gebied.")
+                # Inkomen op gemeenteniveau (postcode-niveau niet beschikbaar via CBS API)
+                # Bepaal gemeente via middelpunt van het getekende gebied
+                g = st.session_state.gebied
+                if g:
+                    center_lat = g["lat"] if g["type"]=="cirkel" else sum(c[1] for c in g["coords"])/len(g["coords"])
+                    center_lon = g["lon"] if g["type"]=="cirkel" else sum(c[0] for c in g["coords"])/len(g["coords"])
+
+                    with st.spinner("Gemeente bepalen..."):
+                        gm_code, gm_naam = get_gemeente_code(center_lat, center_lon)
+
+                    if not gm_code:
+                        st.info("Kon gemeente niet bepalen voor dit gebied.")
+                    else:
+                        with st.spinner(f"Inkomen {gm_naam} ophalen..."):
+                            gm_row = get_inkomen_gemeente(gm_code)
+                            nl_row = get_inkomen_nl()
+
+                        if not gm_row:
+                            st.info(f"Geen inkomensdata voor gemeente {gm_naam}.")
+                        else:
+                            st.caption(f"📍 Gemeente {gm_naam} ({gm_code}) — CBS 85318NED")
+                            st.caption("⚠️ Inkomen is op gemeenteniveau, niet op postcodeniveau")
+
+                            # Waarden ophalen (CBS geeft bedragen in €1.000)
+                            gem_inw  = gm_row.get(INK_COLS["gem_inw"])
+                            gem_ontv = gm_row.get(INK_COLS["gem_ontv"])
+                            laag_ink = gm_row.get(INK_COLS["laag_ink"])
+
+                            nl_inw   = nl_row.get(INK_COLS["gem_inw"])  if nl_row else None
+                            nl_ontv  = nl_row.get(INK_COLS["gem_ontv"]) if nl_row else None
+                            nl_laag  = nl_row.get(INK_COLS["laag_ink"]) if nl_row else None
+
+                            # Kerncijfers
+                            c1, c2 = st.columns(2)
+                            if gem_inw:
+                                val_inw = round(gem_inw * 1000)
+                                delta_inw = f"€ {val_inw - round(nl_inw*1000):+,.0f} vs NL".replace(",",".") if nl_inw else None
+                                c1.metric("Gem. inkomen per inwoner",
+                                          f"€ {val_inw:,}".replace(",","."),
+                                          delta=delta_inw)
+                            if gem_ontv:
+                                val_ontv = round(gem_ontv * 1000)
+                                delta_ontv = f"€ {val_ontv - round(nl_ontv*1000):+,.0f} vs NL".replace(",",".") if nl_ontv else None
+                                c2.metric("Gem. inkomen per ontvanger",
+                                          f"€ {val_ontv:,}".replace(",","."),
+                                          delta=delta_ontv)
+                            if laag_ink is not None:
+                                c3, _ = st.columns(2)
+                                delta_laag = f"{laag_ink - nl_laag:+.1f}%-pt vs NL" if nl_laag else None
+                                c3.metric("Aandeel laagste 40% inkomens",
+                                          f"{laag_ink:.1f}%",
+                                          delta=delta_laag,
+                                          delta_color="inverse")
+
+                            st.caption("Delta t.o.v. landelijk gemiddelde. Rood = hoger aandeel laagste inkomens.")
+
+                            st.divider()
+                            st.subheader("📋 Uitkeringen")
+                            uitk_bij  = gm_row.get(INK_COLS["uitk_bijstand"])
+                            uitk_ao   = gm_row.get(INK_COLS["uitk_ao"])
+                            uitk_ww   = gm_row.get(INK_COLS["uitk_ww"])
+                            uitk_aow  = gm_row.get(INK_COLS["uitk_aow"])
+
+                            nl_bij  = nl_row.get(INK_COLS["uitk_bijstand"]) if nl_row else None
+                            nl_ao   = nl_row.get(INK_COLS["uitk_ao"])       if nl_row else None
+                            nl_ww   = nl_row.get(INK_COLS["uitk_ww"])       if nl_row else None
+                            nl_aow  = nl_row.get(INK_COLS["uitk_aow"])      if nl_row else None
+
+                            cu1, cu2, cu3, cu4 = st.columns(4)
+                            if uitk_bij is not None:
+                                cu1.metric("Bijstand", f"{uitk_bij:.1f} per 1.000",
+                                          delta=f"{uitk_bij-nl_bij:+.1f} vs NL" if nl_bij is not None else None,
+                                          delta_color="inverse")
+                            if uitk_ao is not None:
+                                cu2.metric("AO", f"{uitk_ao:.1f} per 1.000",
+                                          delta=f"{uitk_ao-nl_ao:+.1f} vs NL" if nl_ao is not None else None,
+                                          delta_color="inverse")
+                            if uitk_ww is not None:
+                                cu3.metric("WW", f"{uitk_ww:.1f} per 1.000",
+                                          delta=f"{uitk_ww-nl_ww:+.1f} vs NL" if nl_ww is not None else None,
+                                          delta_color="inverse")
+                            if uitk_aow is not None:
+                                cu4.metric("AOW", f"{uitk_aow:.1f} per 1.000",
+                                          delta=f"{uitk_aow-nl_aow:+.1f} vs NL" if nl_aow is not None else None)
+                            st.caption("Aantal personen met uitkering per 1.000 inwoners. Rood = hoger dan NL (behalve AOW).")
+
+                            st.divider()
+                            st.subheader("🏠 Koop / huur verhouding")
+                            koop      = gm_row.get(INK_COLS["koop"])
+                            huur_tot  = gm_row.get(INK_COLS["huur_tot"])
+                            nl_koop   = nl_row.get(INK_COLS["koop"])     if nl_row else None
+                            nl_huur   = nl_row.get(INK_COLS["huur_tot"]) if nl_row else None
+
+                            if koop is not None and huur_tot is not None:
+                                tot_won = koop + huur_tot
+                                pct_koop = koop/tot_won*100 if tot_won else 0
+                                pct_huur = huur_tot/tot_won*100 if tot_won else 0
+
+                                nl_pct_koop = None
+                                if nl_koop is not None and nl_huur is not None:
+                                    nl_tot = nl_koop + nl_huur
+                                    nl_pct_koop = nl_koop/nl_tot*100 if nl_tot else None
+
+                                cw1, cw2 = st.columns(2)
+                                cw1.metric("Koopwoningen", f"{pct_koop:.1f}%",
+                                          delta=f"{pct_koop-nl_pct_koop:+.1f}%-pt vs NL" if nl_pct_koop else None)
+                                cw2.metric("Huurwoningen", f"{pct_huur:.1f}%",
+                                          delta=f"{(100-pct_koop)-(100-nl_pct_koop):+.1f}%-pt vs NL" if nl_pct_koop else None)
+
+                                fig_won = px.pie(
+                                    names=["Koop", "Huur"], values=[koop, huur_tot],
+                                    color_discrete_sequence=["#1D9E75", "#185FA5"],
+                                    hole=0.45, height=240,
+                                )
+                                fig_won.update_layout(margin=dict(t=8,b=8,l=8,r=8))
+                                st.plotly_chart(fig_won, use_container_width=True)
+                            else:
+                                st.info("Geen woningdata beschikbaar voor deze gemeente.")
                 else:
-                    _, cols = next(iter(ink_res.values()))
-                    c_gem  = INK_COLS.get("gem_ink")
-                    c_med  = INK_COLS.get("med_ink")
-                    c_gbes = INK_COLS.get("gem_best")
-                    c_mbes = INK_COLS.get("med_best")
-
-                    def avg_ink(col):
-                        if not col: return None
-                        vals = [r.get(col) for r,_ in ink_res.values() if r and r.get(col)]
-                        return round(sum(vals)/len(vals)*1000) if vals else None
-
-                    gem_ink  = avg_ink(c_gem)
-                    med_ink  = avg_ink(c_med)
-                    gem_best = avg_ink(c_gbes)
-                    med_best = avg_ink(c_mbes)
-
-                    # NL benchmark
-                    nl_row, _ = get_inkomen("NL01")
-                    nl_gem  = round(nl_row.get(c_gem,  0)*1000) if nl_row and c_gem  else None
-                    nl_med  = round(nl_row.get(c_med,  0)*1000) if nl_row and c_med  else None
-                    nl_gbes = round(nl_row.get(c_gbes, 0)*1000) if nl_row and c_gbes else None
-                    nl_mbes = round(nl_row.get(c_mbes, 0)*1000) if nl_row and c_mbes else None
-
-                    # Kerncijfers
-                    c1, c2 = st.columns(2)
-                    if gem_ink:
-                        c1.metric("Gem. gestandaardiseerd inkomen",
-                                  f"€ {gem_ink:,}".replace(",","."),
-                                  delta=f"€ {gem_ink-nl_gem:+,.0f} vs NL".replace(",",".") if nl_gem else None)
-                    if med_ink:
-                        c2.metric("Mediaan gestandaardiseerd inkomen",
-                                  f"€ {med_ink:,}".replace(",","."),
-                                  delta=f"€ {med_ink-nl_med:+,.0f} vs NL".replace(",",".") if nl_med else None)
-                    c3, c4 = st.columns(2)
-                    if gem_best:
-                        c3.metric("Gem. besteedbaar inkomen",
-                                  f"€ {gem_best:,}".replace(",","."),
-                                  delta=f"€ {gem_best-nl_gbes:+,.0f} vs NL".replace(",",".") if nl_gbes else None)
-                    if med_best:
-                        c4.metric("Mediaan besteedbaar inkomen",
-                                  f"€ {med_best:,}".replace(",","."),
-                                  delta=f"€ {med_best-nl_mbes:+,.0f} vs NL".replace(",",".") if nl_mbes else None)
-                    st.caption("Delta t.o.v. landelijk gemiddelde. Gemiddelde over postcodes in het gebied.")
-
-                    # Staafgrafiek mediaan per postcode
-                    if c_med and len(ink_res) > 1:
-                        ink_plot = [{"Postcode": p, "Mediaan inkomen (€)": round(r.get(c_med,0)*1000)}
-                                    for p,(r,_) in ink_res.items() if r and r.get(c_med)]
-                        if ink_plot:
-                            ink_plot.sort(key=lambda x: x["Mediaan inkomen (€)"], reverse=True)
-                            fig_ink = px.bar(pd.DataFrame(ink_plot),
-                                             x="Postcode", y="Mediaan inkomen (€)",
-                                             color_discrete_sequence=["#1D9E75"], height=280)
-                            if nl_med:
-                                fig_ink.add_hline(y=nl_med, line_dash="dash", line_color="#888780",
-                                                  annotation_text="⌀ NL", annotation_position="right")
-                            fig_ink.update_layout(
-                                plot_bgcolor="white", paper_bgcolor="white",
-                                yaxis=dict(showgrid=True, gridcolor="#eee", tickprefix="€ ", title=""),
-                                xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
-                                margin=dict(t=8, b=50, l=60, r=40), showlegend=False,
-                            )
-                            st.plotly_chart(fig_ink, use_container_width=True)
+                    st.info("Teken eerst een gebied op de kaart.")
 
             with tab5:
                 # Man/vrouw per leeftijdsklasse
