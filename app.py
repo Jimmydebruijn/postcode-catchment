@@ -334,8 +334,16 @@ INK_COLS = {
 
 @st.cache_data(ttl=3600)
 def get_ink_periode():
-    perioden = fetch(f"{INK_BASE}/Perioden?$format=json")
-    return perioden[-1]["Key"] if perioden else "2022JJ00"
+    """Haal meest recente periode op, met fallback bij API-fouten."""
+    try:
+        r = requests.get(f"{INK_BASE}/Perioden?$format=json", timeout=15)
+        if r.status_code == 200:
+            perioden = r.json().get("value", [])
+            if perioden:
+                return perioden[-1]["Key"]
+    except Exception:
+        pass
+    return "2022JJ00"  # fallback: meest recente bekende periode
 
 @st.cache_data(ttl=3600)
 def get_gemeente_code(lat, lon):
@@ -360,26 +368,32 @@ def get_gemeente_code(lat, lon):
 @st.cache_data(ttl=3600)
 def get_inkomen_gemeente(gm_code):
     """Haal inkomen op voor één gemeente uit 85318NED."""
-    per_key = get_ink_periode()
-    select  = ",".join(INK_COLS.values())
-    obs = fetch(
-        f"{INK_BASE}/TypedDataSet?$format=json"
-        f"&$filter=Perioden eq '{per_key}' and WijkenEnBuurten eq '{gm_code}'"
-        f"&$select=WijkenEnBuurten,{select}"
-    )
-    return obs[0] if obs else None
+    try:
+        per_key = get_ink_periode()
+        select  = ",".join(INK_COLS.values())
+        obs = fetch(
+            f"{INK_BASE}/TypedDataSet?$format=json"
+            f"&$filter=Perioden eq '{per_key}' and WijkenEnBuurten eq '{gm_code}'"
+            f"&$select=WijkenEnBuurten,{select}"
+        )
+        return obs[0] if obs else None
+    except Exception:
+        return None
 
 @st.cache_data(ttl=3600)
 def get_inkomen_nl():
     """Haal NL-totaal inkomen op."""
-    per_key = get_ink_periode()
-    select  = ",".join(INK_COLS.values())
-    obs = fetch(
-        f"{INK_BASE}/TypedDataSet?$format=json"
-        f"&$filter=Perioden eq '{per_key}' and WijkenEnBuurten eq 'NL00  '"
-        f"&$select=WijkenEnBuurten,{select}"
-    )
-    return obs[0] if obs else None
+    try:
+        per_key = get_ink_periode()
+        select  = ",".join(INK_COLS.values())
+        obs = fetch(
+            f"{INK_BASE}/TypedDataSet?$format=json"
+            f"&$filter=Perioden eq '{per_key}' and WijkenEnBuurten eq 'NL00  '"
+            f"&$select=WijkenEnBuurten,{select}"
+        )
+        return obs[0] if obs else None
+    except Exception:
+        return None
 
 # ── PDOK geocode (voor zoekfunctie) ───────────────────────────────────────────
 @st.cache_data(ttl=3600)
