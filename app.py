@@ -855,9 +855,9 @@ with col_result:
                              height=280)
                 fig.update_layout(
                     plot_bgcolor="white", paper_bgcolor="white",
-                    xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
-                    yaxis=dict(showgrid=True, gridcolor="#eee", title=""),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)),
+                    xaxis=dict(tickangle=-45, tickfont=dict(size=9, color="#111")),
+                    yaxis=dict(showgrid=True, gridcolor="#eee", title="", tickfont=dict(color="#111")),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10, color="#111")),
                     margin=dict(t=30, b=50, l=30, r=8),
                 )
                 st.plotly_chart(fig, use_container_width=True)
@@ -875,8 +875,8 @@ with col_result:
                     fig2.update_coloraxes(showscale=False)
                     fig2.update_layout(
                         plot_bgcolor="white", paper_bgcolor="white",
-                        xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
-                        yaxis=dict(showgrid=True, gridcolor="#eee", zeroline=False, title=""),
+                        xaxis=dict(tickangle=-45, tickfont=dict(size=9, color="#111")),
+                        yaxis=dict(showgrid=True, gridcolor="#eee", zeroline=False, title="", tickfont=dict(color="#111")),
                         margin=dict(t=8, b=50, l=30, r=8),
                     )
                     st.caption("Afwijking t.o.v. Nederland — groen = meer dan NL, paars = minder")
@@ -928,9 +928,9 @@ with col_result:
                                     labels={"%": "% van huishoudens"}, height=260)
                     fig_hh.update_layout(
                         plot_bgcolor="white", paper_bgcolor="white",
-                        yaxis=dict(showgrid=True, gridcolor="#eee", title=""),
-                        xaxis=dict(tickfont=dict(size=10)),
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)),
+                        yaxis=dict(showgrid=True, gridcolor="#eee", title="", tickfont=dict(color="#111")),
+                        xaxis=dict(tickfont=dict(size=10, color="#111")),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10, color="#111")),
                         margin=dict(t=30, b=20, l=30, r=8),
                     )
                     st.plotly_chart(fig_hh, use_container_width=True)
@@ -978,9 +978,9 @@ with col_result:
                                        height=300)
                         fig_h.update_layout(
                             plot_bgcolor="white", paper_bgcolor="white",
-                            xaxis=dict(showgrid=True, gridcolor="#eee"),
-                            yaxis=dict(autorange="reversed"),
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)),
+                            xaxis=dict(showgrid=True, gridcolor="#eee", tickfont=dict(color="#111")),
+                            yaxis=dict(autorange="reversed", tickfont=dict(color="#111")),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10, color="#111")),
                             margin=dict(t=30, b=30, l=8, r=8),
                         )
                         st.plotly_chart(fig_h, use_container_width=True)
@@ -1100,7 +1100,8 @@ with col_result:
                                     color_discrete_sequence=["#1D9E75", "#185FA5"],
                                     hole=0.45, height=240,
                                 )
-                                fig_won.update_layout(margin=dict(t=8,b=8,l=8,r=8))
+                                fig_won.update_layout(margin=dict(t=8,b=8,l=8,r=8),
+                                                       legend=dict(font=dict(color="#111")))
                                 st.plotly_chart(fig_won, use_container_width=True)
                             else:
                                 st.info("Geen woningdata beschikbaar voor deze gemeente.")
@@ -1164,9 +1165,9 @@ with col_result:
                                         labels={"Percentage": "% van totaal"}, height=300)
                         fig_mv.update_layout(
                             plot_bgcolor="white", paper_bgcolor="white",
-                            xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
-                            yaxis=dict(showgrid=True, gridcolor="#eee", title=""),
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                            xaxis=dict(tickangle=-45, tickfont=dict(size=9, color="#111")),
+                            yaxis=dict(showgrid=True, gridcolor="#eee", title="", tickfont=dict(color="#111")),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(color="#111")),
                             margin=dict(t=30, b=50, l=30, r=8),
                         )
                         st.plotly_chart(fig_mv, use_container_width=True)
@@ -1189,9 +1190,10 @@ with col_result:
                                        tickvals=[-max_val, -max_val//2, 0, max_val//2, max_val],
                                        ticktext=[str(abs(max_val)), str(abs(max_val//2)), "0",
                                                  str(max_val//2), str(max_val)],
-                                       showgrid=True, gridcolor="#eee", title="Aantal"),
-                            yaxis=dict(title=""),
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                                       showgrid=True, gridcolor="#eee", title="Aantal",
+                                       tickfont=dict(color="#111"), titlefont=dict(color="#111")),
+                            yaxis=dict(title="", tickfont=dict(color="#111")),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(color="#111")),
                             margin=dict(t=30, b=30, l=50, r=30),
                             barmode="overlay",
                         )
