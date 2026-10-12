@@ -596,7 +596,7 @@ with col_kaart:
     m = folium.Map(
         location=st.session_state.kaart_center,
         zoom_start=st.session_state.kaart_zoom,
-        tiles="CartoDB positron",
+        tiles="OpenStreetMap",
     )
 
     Draw(
