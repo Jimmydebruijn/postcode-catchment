@@ -21,7 +21,7 @@ st.caption("Teken een cirkel of polygoon • Alle postcodes binnen het gebied wo
 BASE    = "https://opendata.cbs.nl/ODataApi/OData/83502NED"
 HH_BASE = "https://opendata.cbs.nl/ODataApi/OData/83505NED"
 HK_BASE  = "https://opendata.cbs.nl/ODataApi/OData/85640NED"
-# Inkomen op gemeenteniveau via 85318NED (kerncijfers wijken en buurten)
+# Inkomen op buurt- of gemeenteniveau via 85318NED (kerncijfers wijken en buurten)
 INK_BASE = "https://opendata.cbs.nl/ODataApi/OData/85318NED"
 
 # ── Statische PC4 centroïden ───────────────────────────────────────────────────
@@ -366,6 +366,31 @@ def get_gemeente_code(lat, lon):
     return None, None
 
 @st.cache_data(ttl=3600)
+def get_buurtcode(lat, lon):
+    """Haal buurtcode op via PDOK WFS. Valt terug op None als de call mislukt."""
+    try:
+        url = "https://service.pdok.nl/cbs/wijkenbuurten/2024/wfs/v1_0"
+        params = {
+            "service": "WFS",
+            "version": "2.0.0",
+            "request": "GetFeature",
+            "typeName": "wijkenbuurten:buurten",
+            "outputFormat": "application/json",
+            "srsName": "EPSG:4326",
+            "count": "1",
+            "cql_filter": f"INTERSECTS(geom, POINT({lon} {lat}))"
+        }
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code == 200:
+            features = r.json().get("features", [])
+            if features:
+                props = features[0]["properties"]
+                return props.get("buurtcode"), props.get("buurtnaam")
+    except Exception:
+        pass
+    return None, None
+
+@st.cache_data(ttl=3600)
 def get_inkomen_gemeente(gm_code):
     """Haal inkomen op voor één gemeente uit 85318NED."""
     try:
@@ -571,7 +596,7 @@ with col_kaart:
     m = folium.Map(
         location=st.session_state.kaart_center,
         zoom_start=st.session_state.kaart_zoom,
-        tiles="OpenStreetMap",
+        tiles="CartoDB positron",
     )
 
     Draw(
@@ -986,28 +1011,56 @@ with col_result:
                         st.plotly_chart(fig_h, use_container_width=True)
 
             with tab4:
-                # Inkomen op gemeenteniveau (postcode-niveau niet beschikbaar via CBS API)
-                # Bepaal gemeente via middelpunt van het getekende gebied
+                # Inkomen: probeer eerst buurtniveau (PDOK WFS + 85318NED), anders gemeente
                 g = st.session_state.gebied
                 if g:
                     center_lat = g["lat"] if g["type"]=="cirkel" else sum(c[1] for c in g["coords"])/len(g["coords"])
                     center_lon = g["lon"] if g["type"]=="cirkel" else sum(c[0] for c in g["coords"])/len(g["coords"])
 
-                    with st.spinner("Gemeente bepalen..."):
-                        gm_code, gm_naam = get_gemeente_code(center_lat, center_lon)
+                    # Stap 1: probeer buurtcode via PDOK WFS
+                    with st.spinner("Locatie bepalen..."):
+                        buurt_code, buurt_naam = get_buurtcode(center_lat, center_lon)
 
-                    if not gm_code:
-                        st.info("Kon gemeente niet bepalen voor dit gebied.")
+                    regio_code = None
+                    regio_label = None
+                    regio_niveau = None
+
+                    if buurt_code:
+                        # Buurtcode naar 85318NED-formaat: BU + 8 cijfers
+                        regio_code = buurt_code
+                        regio_label = f"Buurt {buurt_naam} ({buurt_code})"
+                        regio_niveau = "buurt"
                     else:
-                        with st.spinner(f"Inkomen {gm_naam} ophalen..."):
-                            gm_row = get_inkomen_gemeente(gm_code)
+                        # Fallback: gemeente via PDOK reverse geocode
+                        gm_code, gm_naam = get_gemeente_code(center_lat, center_lon)
+                        if gm_code:
+                            regio_code = gm_code
+                            regio_label = f"Gemeente {gm_naam} ({gm_code})"
+                            regio_niveau = "gemeente"
+
+                    if not regio_code:
+                        st.info("Kon locatie niet bepalen voor dit gebied.")
+                    else:
+                        with st.spinner(f"Inkomen ophalen..."):
+                            gm_row = get_inkomen_gemeente(regio_code)
                             nl_row = get_inkomen_nl()
 
                         if not gm_row:
-                            st.info(f"Geen inkomensdata voor gemeente {gm_naam}.")
+                            # Als buurt geen data heeft, alsnog gemeente proberen
+                            if regio_niveau == "buurt":
+                                gm_code, gm_naam = get_gemeente_code(center_lat, center_lon)
+                                if gm_code:
+                                    gm_row = get_inkomen_gemeente(gm_code)
+                                    regio_label = f"Gemeente {gm_naam} ({gm_code})"
+                                    regio_niveau = "gemeente"
+
+                        if not gm_row:
+                            st.info(f"Geen inkomensdata beschikbaar voor dit gebied.")
                         else:
-                            st.caption(f"📍 Gemeente {gm_naam} ({gm_code}) — CBS 85318NED")
-                            st.caption("⚠️ Inkomen is op gemeenteniveau, niet op postcodeniveau")
+                            niveau_icon = "🏘️" if regio_niveau == "buurt" else "🏙️"
+                            st.caption(f"{niveau_icon} {regio_label} — CBS 85318NED")
+                            if regio_niveau == "gemeente":
+                                st.caption("ℹ️ Buurtniveau niet beschikbaar — data op gemeenteniveau")
 
                             # Waarden ophalen (CBS geeft bedragen in €1.000)
                             gem_inw  = gm_row.get(INK_COLS["gem_inw"])
