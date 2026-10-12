@@ -571,7 +571,7 @@ with col_kaart:
     m = folium.Map(
         location=st.session_state.kaart_center,
         zoom_start=st.session_state.kaart_zoom,
-        tiles="CartoDB positron",
+        tiles="OpenStreetMap",
     )
 
     Draw(
@@ -1190,8 +1190,9 @@ with col_result:
                                        tickvals=[-max_val, -max_val//2, 0, max_val//2, max_val],
                                        ticktext=[str(abs(max_val)), str(abs(max_val//2)), "0",
                                                  str(max_val//2), str(max_val)],
-                                       showgrid=True, gridcolor="#eee", title="Aantal",
-                                       tickfont=dict(color="#111"), titlefont=dict(color="#111")),
+                                       showgrid=True, gridcolor="#eee",
+                                       tickfont=dict(color="#111"),
+                                       title=dict(text="Aantal", font=dict(color="#111"))),
                             yaxis=dict(title="", tickfont=dict(color="#111")),
                             legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(color="#111")),
                             margin=dict(t=30, b=30, l=50, r=30),
