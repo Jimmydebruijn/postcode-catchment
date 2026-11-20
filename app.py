@@ -1,4 +1,3 @@
-# requirements: streamlit, requests, pandas, plotly, folium, streamlit-folium, openpyxl, reportlab, staticmap, Pillow
 import re
 import math
 import streamlit as st
@@ -9,7 +8,14 @@ from folium.plugins import Draw
 from streamlit_folium import st_folium
 import plotly.express as px
 
-# ── PDF export functie ────────────────────────────────────────────────────────
+
+# ============================================================
+# VERVANGING voor genereer_pdf_onepager() in catchment_v38.py
+# Wijzigingen:
+#  - KPI rij 2: Huishoudens / Gem.grootte / Alleenstaand% / Gezin%
+#  - Staafdiagrammen: staven naast elkaar, labels niet overlappend
+# ============================================================
+
 def genereer_pdf_onepager(
     label, pcs_list, gebied,
     tot, gem, oud_pct, jong_pct,
@@ -23,278 +29,269 @@ def genereer_pdf_onepager(
     locatie_naam="",
 ):
     import io, math
+    from datetime import date
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.units import mm
     from reportlab.pdfgen import canvas as rl_canvas
     from reportlab.lib.utils import ImageReader
-    from PIL import Image, ImageDraw
-    from datetime import date
 
-    W, H = A4
-    GROEN      = colors.HexColor("#1D9E75")
-    PAARS      = colors.HexColor("#534AB7")
-    DONKER     = colors.HexColor("#1a1a2e")
-    GRIJS      = colors.HexColor("#888780")
-    LICHTGRIJS = colors.HexColor("#f5f5f5")
-    WIT        = colors.white
-    ROOD_D     = colors.HexColor("#C0392B")
+    # ── kleuren ──────────────────────────────────────────────
+    GROEN   = colors.HexColor("#1D9E75")
+    PAARS   = colors.HexColor("#534AB7")
+    DONKER  = colors.HexColor("#1a1a2e")
+    GRIJS   = colors.HexColor("#888780")
+    LGRIJS  = colors.HexColor("#f4f4f4")
+    WIT     = colors.white
+    ZWART   = colors.black
+    ROT     = colors.HexColor("#e05c5c")
+
+    W, H = A4          # 595 x 842 pt
+    marg = 14 * mm
 
     buf = io.BytesIO()
-    c = rl_canvas.Canvas(buf, pagesize=A4)
+    c   = rl_canvas.Canvas(buf, pagesize=A4)
 
-    def delta_kleur(val, inverse=False):
-        if val is None: return GRIJS
-        if inverse: return ROOD_D if val > 0 else GROEN
-        return GROEN if val > 0 else ROOD_D
-
-    def fmt_delta(val, suffix=""):
-        if val is None: return ""
-        return f"{val:+.1f}{suffix}"
-
-    def maak_kaart_png(gebied, breedte_px=560, hoogte_px=240):
-        try:
-            from staticmap import StaticMap, CircleMarker, Line
-            m = StaticMap(breedte_px, hoogte_px,
-                         url_template="https://tile.openstreetmap.org/{z}/{x}/{y}.png")
-            if gebied["type"] == "cirkel":
-                lat, lon = gebied["lat"], gebied["lon"]
-                straal_km = gebied["straal"] / 1000
-                ring = []
-                for deg in range(0, 361, 5):
-                    r = math.radians(deg)
-                    dlat = straal_km / 111.0
-                    dlon = straal_km / (111.0 * math.cos(math.radians(lat)))
-                    ring.append((lon + dlon * math.sin(r), lat + dlat * math.cos(r)))
-                m.add_line(Line(ring, "#1D9E75", 3))
-                m.add_marker(CircleMarker((lon, lat), "#1D9E75", 7))
-                zoom = max(10, min(15, int(13 - math.log2(max(straal_km, 0.5)))))
-                img = m.render(zoom=zoom, center=[lon, lat])
-            else:
-                coords = gebied["coords"]
-                lons = [co[0] for co in coords]
-                lats = [co[1] for co in coords]
-                center_lon = sum(lons) / len(lons)
-                center_lat = sum(lats) / len(lats)
-                ring = [(co[0], co[1]) for co in coords]
-                if ring[0] != ring[-1]: ring.append(ring[0])
-                m.add_line(Line(ring, "#1D9E75", 3))
-                m.add_marker(CircleMarker((center_lon, center_lat), "#1D9E75", 6))
-                span = max(max(lons)-min(lons), max(lats)-min(lats))
-                zoom = max(9, min(14, int(11 - math.log2(max(span, 0.01)))))
-                img = m.render(zoom=zoom, center=[center_lon, center_lat])
-            return img
-        except Exception:
-            img = Image.new("RGB", (breedte_px, hoogte_px), "#e8e8e8")
-            d = ImageDraw.Draw(img)
-            d.text((breedte_px//2 - 60, hoogte_px//2 - 8), "Kaart niet beschikbaar", fill="#aaa")
-            return img
-
-    MARGE   = 14*mm
-    BREEDTE = W - 2*MARGE
-    y = H - 12*mm
-
-    # Header
+    # ── header ───────────────────────────────────────────────
+    hdr_h = 22 * mm
     c.setFillColor(DONKER)
-    c.rect(0, y - 6*mm, W, 18*mm, fill=1, stroke=0)
+    c.rect(0, H - hdr_h, W, hdr_h, fill=1, stroke=0)
     c.setFillColor(WIT)
-    c.setFont("Helvetica-Bold", 13)
-    postcodes_str = ", ".join(pcs_list[:6]) + ("…" if len(pcs_list) > 6 else "")
-    titel = f"Catchment Area — {locatie_naam or label}"
-    c.drawString(MARGE, y + 2*mm, titel)
+    c.setFont("Helvetica-Bold", 14)
+    titel = f"Catchment Area — {locatie_naam}"
+    c.drawString(marg, H - 14 * mm, titel)
     c.setFont("Helvetica", 8)
-    c.setFillColor(colors.HexColor("#aaaaaa"))
-    c.drawString(MARGE, y - 2*mm, f"{len(pcs_list)} postcodes: {postcodes_str}  •  Data: CBS StatLine")
-    y -= 10*mm
+    pc_str = ", ".join(pcs_list[:8]) + ("…" if len(pcs_list) > 8 else "")
+    c.drawString(marg, H - 20 * mm, pc_str)
+    c.setFont("Helvetica", 7)
+    c.drawRightString(W - marg, H - 18 * mm, f"Gegenereerd: {date.today().strftime('%d-%m-%Y')}")
 
-    # Kaart
-    kaart_h = 56*mm
-    kaart_img = maak_kaart_png(gebied, breedte_px=int(BREEDTE * 2.83), hoogte_px=int(kaart_h * 2.83))
-    img_buf = io.BytesIO()
-    kaart_img.save(img_buf, format="PNG")
-    img_buf.seek(0)
-    c.drawImage(ImageReader(img_buf), MARGE, y - kaart_h, width=BREEDTE, height=kaart_h,
-                preserveAspectRatio=False)
-    c.setStrokeColor(colors.HexColor("#dddddd"))
-    c.setLineWidth(0.5)
-    c.rect(MARGE, y - kaart_h, BREEDTE, kaart_h, fill=0, stroke=1)
-    y -= kaart_h + 4*mm
+    cursor = H - hdr_h - 4 * mm   # lopende y-positie (top-down)
 
-    # KPI rij
-    kpi_breedte = BREEDTE / 4
-    kpis = [
-        ("Inwoners", f"{int(tot):,}".replace(",", "."), None, False),
-        ("Gem. leeftijd", f"{gem:.1f} jr" if gem else "—",
-         gem - nl_gem if gem and nl_gem else None, False),
-        ("Aandeel 65+", f"{oud_pct:.1f}%",
-         oud_pct - nl_oud_pct if nl_oud_pct is not None else None, False),
-        ("Aandeel 0–25", f"{jong_pct:.1f}%",
-         jong_pct - nl_jong_pct if nl_jong_pct is not None else None, False),
-    ]
-    kpi_h = 16*mm
-    c.setFillColor(LICHTGRIJS)
-    c.rect(MARGE, y - kpi_h, BREEDTE, kpi_h, fill=1, stroke=0)
-    for i, (naam, waarde, delta, inv) in enumerate(kpis):
-        x = MARGE + i * kpi_breedte
+    # ── kaartafbeelding ───────────────────────────────────────
+    map_h = 56 * mm
+    map_w = W - 2 * marg
+    map_img = None
+    try:
+        from staticmap import StaticMap, Line, CircleMarker
+        import tempfile, os
+
+        sm = StaticMap(int(map_w * 2.83), int(map_h * 2.83), url_template="https://tile.openstreetmap.org/{z}/{x}/{y}.png")
+
+        if gebied and gebied.get("type") == "circle":
+            cx   = gebied["center"][1]
+            cy   = gebied["center"][0]
+            r_km = gebied["radius"] / 1000
+            pts  = []
+            for i in range(73):
+                ang = math.radians(i * 5)
+                dx  = r_km / (111.32 * math.cos(math.radians(cy)))
+                dy  = r_km / 110.574
+                pts.append((cx + dx * math.cos(ang), cy + dy * math.sin(ang)))
+            sm.add_line(Line(pts, "#1D9E75", 3))
+        elif gebied and gebied.get("type") == "polygon":
+            coords = [(p[1], p[0]) for p in gebied["coordinates"]]
+            sm.add_line(Line(coords + [coords[0]], "#1D9E75", 3))
+
+        img_obj = sm.render()
+        tmp_path = tempfile.mktemp(suffix=".png")
+        img_obj.save(tmp_path)
+        map_img  = ImageReader(tmp_path)
+        os.unlink(tmp_path)
+    except Exception:
+        pass   # valt terug op grijze balk
+
+    if map_img:
+        c.drawImage(map_img, marg, cursor - map_h, width=map_w, height=map_h)
+    else:
+        c.setFillColor(LGRIJS)
+        c.rect(marg, cursor - map_h, map_w, map_h, fill=1, stroke=0)
         c.setFillColor(GRIJS)
-        c.setFont("Helvetica", 7)
-        c.drawString(x + 2*mm, y - 4*mm, naam)
+        c.setFont("Helvetica", 9)
+        c.drawCentredString(W / 2, cursor - map_h / 2, "Kaart niet beschikbaar")
+
+    # kaart-rand
+    c.setStrokeColor(GRIJS)
+    c.setLineWidth(0.5)
+    c.rect(marg, cursor - map_h, map_w, map_h, fill=0, stroke=1)
+
+    cursor -= map_h + 4 * mm
+
+    # ── hulpfuncties ──────────────────────────────────────────
+    def delta_badge(c, x, y, val, suffix="", is_pct_pt=False):
+        """Tekent een groen/rood badge met pijl + delta."""
+        if val is None:
+            return
+        label_suf = "%-pt" if is_pct_pt else suffix
+        txt = f"{'↑' if val >= 0 else '↓'} {abs(val):.1f}{label_suf} vs NL"
+        clr = GROEN if val >= 0 else ROT
+        c.setFillColor(clr)
+        tw = c.stringWidth(txt, "Helvetica", 6.5) + 6
+        c.roundRect(x, y - 1.5*mm, tw, 4.5*mm, 2, fill=1, stroke=0)
+        c.setFillColor(WIT)
+        c.setFont("Helvetica", 6.5)
+        c.drawString(x + 3, y + 0.3*mm, txt)
+
+    def kpi_cell(c, x, y, w, h, main_lbl, main_val, badge_val=None,
+                 badge_suf="", badge_ppt=False, sub_lbl=""):
+        c.setFillColor(LGRIJS)
+        c.roundRect(x, y - h, w, h, 3, fill=1, stroke=0)
         c.setFillColor(DONKER)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(x + 2*mm, y - 10*mm, waarde)
-        if delta is not None:
-            c.setFillColor(delta_kleur(delta, inv))
-            c.setFont("Helvetica", 7)
-            c.drawString(x + 2*mm, y - 14*mm, fmt_delta(delta, " vs NL"))
-        if i > 0:
-            c.setStrokeColor(colors.HexColor("#dddddd"))
-            c.setLineWidth(0.3)
-            c.line(x, y - kpi_h + 2*mm, x, y - 2*mm)
-    y -= kpi_h + 5*mm
+        c.setFont("Helvetica", 7)
+        c.drawString(x + 3*mm, y - 5*mm, main_lbl)
+        c.setFont("Helvetica-Bold", 15)
+        c.drawString(x + 3*mm, y - 12*mm, str(main_val))
+        if badge_val is not None:
+            delta_badge(c, x + 3*mm, y - 17*mm, badge_val, badge_suf, badge_ppt)
+        if sub_lbl:
+            c.setFillColor(GRIJS)
+            c.setFont("Helvetica", 6)
+            c.drawString(x + 3*mm, y - h + 2*mm, sub_lbl)
 
-    # Drie kolommen: leeftijdsdelta | huishoudens | herkomst
-    KOL        = BREEDTE / 3
-    KOL_PAD    = 3*mm
-    GRAFIEK_H  = 54*mm
-    LABEL_H    = 5*mm
+    # ── KPI rij 1 : Bevolking ─────────────────────────────────
+    kpi_h  = 20 * mm
+    kpi_w  = (W - 2*marg - 3*mm) / 4
+    gap    = 1 * mm
+    labels1 = ["Inwoners", "Gem. leeftijd", "Aandeel 0-25", "Aandeel 65+"]
+    vals1   = [
+        f"{tot:,.0f}".replace(",", "."),
+        f"{gem:.1f} jr",
+        f"{jong_pct:.1f}%",
+        f"{oud_pct:.1f}%",
+    ]
+    deltas1 = [
+        None,
+        gem - nl_gem if nl_gem else None,
+        None,
+        None,
+    ]
+    # leeftijd delta
+    for i, (lbl, val, dlt) in enumerate(zip(labels1, vals1, deltas1)):
+        kpi_cell(c, marg + i*(kpi_w + gap), cursor, kpi_w, kpi_h, lbl, val, dlt, " jr")
+    cursor -= kpi_h + 2 * mm
 
-    LABELS_VOLGORDE = [
-        "0-5","5-10","10-15","15-20","20-25","25-30","30-35","35-40",
-        "40-45","45-50","50-55","55-60","60-65","65-70","70-75",
-        "75-80","80-85","85-90","90+"
+    # ── KPI rij 2 : Huishoudens ───────────────────────────────
+    labels2 = ["Huishoudens", "Gem. grootte", "Aandeel alleenst.", "Aandeel gezin m.k."]
+    vals2   = [
+        f"{tot_hh:,.0f}".replace(",", "."),
+        f"{gem_grootte:.1f} pers.",
+        f"{pc_alone:.1f}%",
+        f"{pc_gezin:.1f}%",
+    ]
+    d_grootte = (gem_grootte - nl_gem_grootte) if nl_gem_grootte else None
+    d_alone   = (pc_alone - nl_alone)           if nl_alone   else None
+    d_gezin   = (pc_gezin - nl_gezin)           if nl_gezin   else None
+    deltas2   = [None, d_grootte, d_alone, d_gezin]
+    ppf2      = [False, False, True, True]
+    for i, (lbl, val, dlt, pp) in enumerate(zip(labels2, vals2, deltas2, ppf2)):
+        kpi_cell(c, marg + i*(kpi_w + gap), cursor, kpi_w, kpi_h, lbl, val, dlt, " pers." if i==1 else "", pp)
+    cursor -= kpi_h + 4 * mm
+
+    # ── 3 staafdiagrammen (naast elkaar) ─────────────────────
+    chart_area_w = W - 2 * marg
+    chart_w      = (chart_area_w - 2 * 4*mm) / 3   # 3 kolommen, 2 gaps
+    chart_h      = 52 * mm
+    gap_c        = 4 * mm
+
+    charts = [
+        ("Leeftijdsverdeling", verd_agg, nl_verd),
+        ("Huishoudentype",     hh_agg,   nl_hh),
+        ("Herkomst",           hk_agg,   nl_hk),
     ]
 
-    for ki, (titel_sec, soort) in enumerate([
-        ("👥 Leeftijdsverdeling (Δ vs NL)", "leeftijd"),
-        ("🏠 Huishoudentype", "huishouden"),
-        ("🌍 Herkomst", "herkomst"),
-    ]):
-        x0 = MARGE + ki * KOL
+    def staafdiagram(c, x, y, w, h, titel, gebied_d, nl_d):
+        """
+        Horizontale staven: Gebied (groen) + NL (grijs) PER rij,
+        staven naast elkaar (niet overlappend).
+        """
+        if not gebied_d:
+            return
+        cats = list(gebied_d.keys())
+        n    = len(cats)
+
+        BAR_H_PAIR = (h - 14*mm) / max(n, 1)   # hoogte per categorie-paar
+        BAR_H      = min(BAR_H_PAIR * 0.38, 4.5*mm)   # één staaf
+        GAP_WITHIN = 0.6 * mm                    # ruimte tussen de 2 staven
+        label_w    = 22 * mm
+        bar_area   = w - label_w - 12*mm         # breedte voor staven + waarden
+
+        # titel
         c.setFillColor(DONKER)
         c.setFont("Helvetica-Bold", 7.5)
-        c.drawString(x0 + KOL_PAD, y - LABEL_H + 1*mm, titel_sec)
-        c.setFillColor(LICHTGRIJS)
-        c.rect(x0 + KOL_PAD/2, y - LABEL_H - GRAFIEK_H,
-               KOL - KOL_PAD, GRAFIEK_H, fill=1, stroke=0)
+        c.drawString(x, y - 5*mm, titel)
 
-        balk_breedte = KOL - KOL_PAD - 20*mm
-        balk_x       = x0 + KOL_PAD + 18*mm
-        balk_start_y = y - LABEL_H - GRAFIEK_H + 2*mm
+        # legenda
+        leg_y = y - 9.5*mm
+        c.setFillColor(GROEN); c.rect(x, leg_y, 3.5*mm, 2.5*mm, fill=1, stroke=0)
+        c.setFillColor(DONKER); c.setFont("Helvetica", 6)
+        c.drawString(x + 4.5*mm, leg_y + 0.3*mm, "Gebied")
+        c.setFillColor(GRIJS); c.rect(x + 18*mm, leg_y, 3.5*mm, 2.5*mm, fill=1, stroke=0)
+        c.setFillColor(DONKER)
+        c.drawString(x + 23*mm, leg_y + 0.3*mm, "NL")
 
-        if soort == "leeftijd":
-            n = len(LABELS_VOLGORDE)
-            balk_h = (GRAFIEK_H - 4*mm) / n
-            tot_verd    = sum(verd_agg.values()) or 1
-            nl_tot_verd = sum(nl_verd.values()) or 1
-            max_afw = max(
-                abs(verd_agg.get(l,0)/tot_verd*100 - nl_verd.get(l,0)/nl_tot_verd*100)
-                for l in LABELS_VOLGORDE
-            ) or 1
-            null_x = balk_x + balk_breedte / 2
-            c.setStrokeColor(colors.HexColor("#cccccc"))
-            c.setLineWidth(0.3)
-            c.line(null_x, balk_start_y, null_x, balk_start_y + GRAFIEK_H - 4*mm)
-            for li, lbl in enumerate(LABELS_VOLGORDE):
-                by = balk_start_y + li * balk_h
-                g_pct  = verd_agg.get(lbl, 0) / tot_verd * 100
-                nl_pct = nl_verd.get(lbl, 0) / nl_tot_verd * 100
-                afw = g_pct - nl_pct
-                breedte_balk = abs(afw) / max_afw * (balk_breedte / 2) * 0.9
-                c.setFillColor(GROEN if afw >= 0 else PAARS)
-                if afw >= 0:
-                    c.rect(null_x, by + 0.5, breedte_balk, balk_h * 0.7, fill=1, stroke=0)
-                else:
-                    c.rect(null_x - breedte_balk, by + 0.5, breedte_balk, balk_h * 0.7, fill=1, stroke=0)
-                c.setFillColor(GRIJS)
-                c.setFont("Helvetica", 5.5)
-                c.drawRightString(balk_x - 1, by + 1.5, lbl)
-            c.setFont("Helvetica", 6)
+        top_y = y - 13 * mm
+        max_val = max(
+            max((gebied_d.get(k, 0) or 0) for k in cats),
+            max((nl_d.get(k, 0) or 0)     for k in cats) if nl_d else 1,
+            1,
+        )
+        scale = bar_area / max_val
+
+        for i, cat in enumerate(cats):
+            row_y  = top_y - i * BAR_H_PAIR
+            g_val  = gebied_d.get(cat) or 0
+            nl_val = (nl_d.get(cat) or 0) if nl_d else 0
+
+            # categorie-label (links)
+            c.setFillColor(DONKER)
+            c.setFont("Helvetica", 5.8)
+            # afkappen als te lang
+            lbl = cat[:14] + "." if len(cat) > 14 else cat
+            c.drawRightString(x + label_w - 1*mm, row_y - BAR_H + 1*mm, lbl)
+
+            # Gebied-staaf (boven)
+            bx = x + label_w
+            bw = max(g_val * scale, 0.5)
             c.setFillColor(GROEN)
-            c.drawString(x0 + KOL_PAD, y - LABEL_H - GRAFIEK_H + 1.5*mm, "▲ meer dan NL")
-            c.setFillColor(PAARS)
-            c.drawString(x0 + KOL_PAD + 18*mm, y - LABEL_H - GRAFIEK_H + 1.5*mm, "▼ minder")
+            c.rect(bx, row_y - BAR_H, bw, BAR_H, fill=1, stroke=0)
+            # waarde-label
+            c.setFillColor(DONKER)
+            c.setFont("Helvetica-Bold", 5.5)
+            c.drawString(bx + bw + 1*mm, row_y - BAR_H + 0.5*mm, f"{g_val:.0f}%")
 
-        elif soort == "huishouden":
-            HH_TYPEN = ["Alleenstaand", "Gezin met kinderen", "Stel/meerp. zonder kinderen"]
-            HH_KORT  = ["Alleenstaand", "Gezin m. kinderen", "Stel z. kinderen"]
-            tot_hh_g    = hh_agg.get("__totaal", 1) or 1
-            nl_tot_hh_g = nl_hh.get("__totaal", 1) or 1
-            n = len(HH_TYPEN)
-            groep_h  = (GRAFIEK_H - 6*mm) / n
-            balk_h2  = groep_h * 0.35
-            max_pct_hh = 60
-            for hi, (typ, kort) in enumerate(zip(HH_TYPEN, HH_KORT)):
-                by_base = balk_start_y + hi * groep_h + 1*mm
-                g_p  = hh_agg.get(typ, 0) / tot_hh_g * 100
-                nl_p = nl_hh.get(typ, 0) / nl_tot_hh_g * 100 if nl_hh else 0
-                c.setFillColor(DONKER)
-                c.setFont("Helvetica", 6)
-                c.drawString(x0 + KOL_PAD, by_base + balk_h2 + 1, kort)
-                w_g  = g_p  / max_pct_hh * balk_breedte
-                w_nl = nl_p / max_pct_hh * balk_breedte
-                c.setFillColor(GROEN)
-                c.rect(balk_x, by_base + balk_h2 * 0.1, w_g, balk_h2, fill=1, stroke=0)
-                c.setFillColor(DONKER)
-                c.setFont("Helvetica-Bold", 6.5)
-                c.drawString(balk_x + w_g + 1, by_base + balk_h2 * 0.1, f"{g_p:.0f}%")
-                c.setFillColor(GRIJS)
-                c.rect(balk_x, by_base - balk_h2 * 0.1, w_nl, balk_h2 * 0.7, fill=1, stroke=0)
-                c.setFont("Helvetica", 6)
-                c.drawString(balk_x + w_nl + 1, by_base - balk_h2 * 0.1, f"{nl_p:.0f}%")
-            c.setFont("Helvetica", 6)
-            c.setFillColor(GROEN)
-            c.drawString(x0 + KOL_PAD, y - LABEL_H - GRAFIEK_H + 1.5*mm, "■ Gebied")
+            # NL-staaf (onder)
+            bw2 = max(nl_val * scale, 0.5)
             c.setFillColor(GRIJS)
-            c.drawString(x0 + KOL_PAD + 11*mm, y - LABEL_H - GRAFIEK_H + 1.5*mm, "■ ⌀ NL")
-
-        elif soort == "herkomst":
-            HK_CATS = ["Nederland", "Europa (excl. NL)", "Turkije", "Marokko",
-                       "Suriname", "Afrika", "Amerika", "Azië"]
-            HK_KORT = ["Nederland", "Europa", "Turkije", "Marokko",
-                       "Suriname", "Afrika", "Amerika", "Azië"]
-            nl_tot_hk_g = nl_hk.get("Totaal", 1) if nl_hk else 1
-            tot_hk_g    = hk_agg.get("Totaal", 1) or 1
-            n = len(HK_CATS)
-            groep_h  = (GRAFIEK_H - 6*mm) / n
-            balk_h3  = groep_h * 0.35
-            max_pct_hk = 80
-            for hi, (cat, kort) in enumerate(zip(HK_CATS, HK_KORT)):
-                by_base = balk_start_y + hi * groep_h + 1*mm
-                g_p  = hk_agg.get(cat, 0) / tot_hk_g * 100
-                nl_p = nl_hk.get(cat, 0) / nl_tot_hk_g * 100 if nl_hk else 0
-                c.setFillColor(DONKER)
-                c.setFont("Helvetica", 6)
-                c.drawString(x0 + KOL_PAD, by_base + balk_h3 + 1, kort)
-                w_g  = g_p  / max_pct_hk * balk_breedte
-                w_nl = nl_p / max_pct_hk * balk_breedte
-                kleur_cat = GROEN if cat == "Nederland" else PAARS
-                c.setFillColor(kleur_cat)
-                c.rect(balk_x, by_base + balk_h3 * 0.1, w_g, balk_h3, fill=1, stroke=0)
-                c.setFillColor(DONKER)
-                c.setFont("Helvetica-Bold", 6)
-                c.drawString(balk_x + w_g + 1, by_base + balk_h3 * 0.1, f"{g_p:.0f}%")
-                c.setFillColor(GRIJS)
-                c.rect(balk_x, by_base - balk_h3 * 0.1, w_nl, balk_h3 * 0.7, fill=1, stroke=0)
-            c.setFont("Helvetica", 6)
-            c.setFillColor(GROEN)
-            c.drawString(x0 + KOL_PAD, y - LABEL_H - GRAFIEK_H + 1.5*mm, "■ Gebied")
+            row_y2 = row_y - BAR_H - GAP_WITHIN - BAR_H
+            c.rect(bx, row_y2, bw2, BAR_H, fill=1, stroke=0)
             c.setFillColor(GRIJS)
-            c.drawString(x0 + KOL_PAD + 11*mm, y - LABEL_H - GRAFIEK_H + 1.5*mm, "■ ⌀ NL")
+            c.setFont("Helvetica", 5.5)
+            c.drawString(bx + bw2 + 1*mm, row_y2 + 0.5*mm, f"{nl_val:.0f}%")
 
-    y -= LABEL_H + GRAFIEK_H + 5*mm
+    for i, (ttl, gd, nd) in enumerate(charts):
+        cx_ = marg + i * (chart_w + gap_c)
+        staafdiagram(c, cx_, cursor, chart_w, chart_h, ttl, gd, nd)
 
-    # Footer
-    c.setFillColor(colors.HexColor("#f0f0f0"))
-    c.rect(0, 0, W, 8*mm, fill=1, stroke=0)
+    cursor -= chart_h + 3 * mm
+
+    # ── Herkomst NL-aandeel apart vermelden ──────────────────
     c.setFillColor(GRIJS)
     c.setFont("Helvetica", 6.5)
-    c.drawString(MARGE, 2.5*mm,
-        "Data: CBS StatLine (CC BY 4.0)  |  Geodata: PDOK  |  Catchment Area Analyse")
-    c.drawRightString(W - MARGE, 2.5*mm, date.today().strftime("%d %B %Y"))
+    hk_txt = f"Aandeel met Nederlandse achtergrond: {pct_nl_gebied:.1f}% (NL gem. {pct_nl_nl:.1f}%)"
+    c.drawString(marg, cursor, hk_txt)
+    cursor -= 5 * mm
+
+    # ── footer ────────────────────────────────────────────────
+    c.setFillColor(DONKER)
+    c.rect(0, 0, W, 8*mm, fill=1, stroke=0)
+    c.setFillColor(WIT)
+    c.setFont("Helvetica", 6)
+    c.drawString(marg, 3*mm, "Bron: CBS StatLine | PDOK | OpenStreetMap")
+    c.drawRightString(W - marg, 3*mm, "© Catchment Area Tool")
 
     c.save()
     buf.seek(0)
-    return buf.getvalue()
+    return buf.read()
 
 
 
@@ -874,6 +871,32 @@ Klik daarna op **▶ Analyseer** hieronder.
     st.caption(f"Kruidvat: {len(WINKELS_KRUIDVAT)} | Trekpleister: {len(WINKELS_TREKPLEISTER)} | Normal: {len(WINKELS_NORMAL)} | Medi Market: {len(WINKELS_MEDIMARKET)}")
 
     st.divider()
+    st.subheader("📍 Referentielocatie")
+    with st.expander("Voer handmatig adres in (bijv. als er geen filiaal aanwezig is)"):
+        handmatig_adres = st.text_input(
+            "Adres",
+            placeholder="Bijv. Koopmansgildeplein 11, 4105TX Culemborg",
+            key="handmatig_adres_input",
+        )
+        toon_handmatig = st.toggle("Toon op kaart", value=True, key="toon_handmatig_marker")
+        if handmatig_adres and st.button("🔍 Zoek adres", key="zoek_handmatig_adres"):
+            try:
+                import urllib.parse
+                q   = urllib.parse.quote(handmatig_adres)
+                url = f"https://nominatim.openstreetmap.org/search?q={q}&format=json&limit=1&countrycodes=nl"
+                r   = requests.get(url, headers={"User-Agent": "CatchmentAreaTool/1.0"}, timeout=8)
+                res = r.json()
+                if res:
+                    st.session_state["handmatig_lat"] = float(res[0]["lat"])
+                    st.session_state["handmatig_lon"] = float(res[0]["lon"])
+                    st.session_state["handmatig_adres_label"] = handmatig_adres
+                    st.success(f"Gevonden: {res[0]['display_name'][:60]}…")
+                else:
+                    st.warning("Adres niet gevonden. Probeer een specifiekere zoekopdracht.")
+            except Exception as ex:
+                st.error(f"Zoekfout: {ex}")
+
+    st.divider()
     max_pcs = st.slider("Max. postcodes", 5, 40, 15,
                         help="Meer = vollediger maar trager")
     st.caption(f"Peiljaar: {periode_title}")
@@ -929,13 +952,21 @@ with col_kaart:
         for w in WINKELS_KRUIDVAT:
             folium.CircleMarker(
                 location=[w["lat"], w["lon"]],
-                radius=5,
+                radius=9,
                 color="#c8102e",
                 fill=True,
                 fill_color="#c8102e",
-                fill_opacity=0.9,
-                weight=1.5,
+                fill_opacity=0.95,
+                weight=2.5,
                 tooltip=f"<b>Kruidvat #{w['s']}</b> — {w['c']}<br>{w['a']}, {w['p']}",
+                popup=folium.Popup(
+                    f"<div style='font-family:sans-serif;min-width:180px'>"
+                    f"<b style='color:#c8102e'>Kruidvat #{w['s']}</b><br>"
+                    f"<b>{w['c']}</b><br>"
+                    f"{w['a']}, {w['p']}"
+                    f"</div>",
+                    max_width=250,
+                ),
             ).add_to(m)
 
     # Trekpleister — blauwe stippen
@@ -943,13 +974,21 @@ with col_kaart:
         for w in WINKELS_TREKPLEISTER:
             folium.CircleMarker(
                 location=[w["lat"], w["lon"]],
-                radius=5,
+                radius=9,
                 color="#185FA5",
                 fill=True,
                 fill_color="#185FA5",
-                fill_opacity=0.9,
-                weight=1.5,
+                fill_opacity=0.95,
+                weight=2.5,
                 tooltip=f"<b>Trekpleister #{w['s']}</b> — {w['c']}<br>{w['a']}",
+                popup=folium.Popup(
+                    f"<div style='font-family:sans-serif;min-width:180px'>"
+                    f"<b style='color:#185FA5'>Trekpleister #{w['s']}</b><br>"
+                    f"<b>{w['c']}</b><br>"
+                    f"{w['a']}, {w['p']}"
+                    f"</div>",
+                    max_width=250,
+                ),
             ).add_to(m)
 
     # Normal — turquoise stippen
@@ -957,14 +996,39 @@ with col_kaart:
         for w in WINKELS_NORMAL:
             folium.CircleMarker(
                 location=[w["lat"], w["lon"]],
-                radius=5,
+                radius=9,
                 color="#1D9E75",
                 fill=True,
                 fill_color="#1D9E75",
-                fill_opacity=0.9,
-                weight=1.5,
+                fill_opacity=0.95,
+                weight=2.5,
                 tooltip=f"<b>Normal</b> — {w['c']}<br>{w['a']}",
+                popup=folium.Popup(
+                    f"<div style='font-family:sans-serif;min-width:180px'>"
+                    f"<b style='color:#1D9E75'>Normal</b><br>"
+                    f"<b>{w['c']}</b><br>"
+                    f"{w['a']}, {w['p']}"
+                    f"</div>",
+                    max_width=250,
+                ),
             ).add_to(m)
+
+    # Handmatig ingevoerd adres
+    if st.session_state.get("toon_handmatig_marker", True) and st.session_state.get("handmatig_lat"):
+        hlat = st.session_state["handmatig_lat"]
+        hlon = st.session_state["handmatig_lon"]
+        hlbl = st.session_state.get("handmatig_adres_label", "Referentielocatie")
+        folium.Marker(
+            location=[hlat, hlon],
+            tooltip=f"<b>📍 {hlbl}</b>",
+            popup=folium.Popup(
+                f"<div style='font-family:sans-serif;min-width:180px'>"
+                f"<b>📍 Referentielocatie</b><br>{hlbl}"
+                f"</div>",
+                max_width=280,
+            ),
+            icon=folium.Icon(color="orange", icon="map-marker", prefix="fa"),
+        ).add_to(m)
 
     # Medi Market — groen kruis
     if toon_medimarket:
@@ -1547,84 +1611,6 @@ with col_result:
             st.divider()
             st.subheader("📥 Exporteren")
 
-            # PDF one-pager
-            if st.button("📄 Genereer PDF one-pager", type="primary", use_container_width=True):
-                with st.spinner("PDF wordt gemaakt..."):
-                    try:
-                        g_pdf = st.session_state.gebied
-                        center_lat_pdf = g_pdf["lat"] if g_pdf["type"]=="cirkel" else sum(c[1] for c in g_pdf["coords"])/len(g_pdf["coords"])
-                        center_lon_pdf = g_pdf["lon"] if g_pdf["type"]=="cirkel" else sum(c[0] for c in g_pdf["coords"])/len(g_pdf["coords"])
-
-                        # Leeftijdsdata
-                        tot_pdf  = sum(verd_agg.values())
-                        gem_pdf  = gem_leeftijd_fn(verd_agg)
-                        nl_tot_p = sum(nl_verd.values()) or 1
-                        oud_pdf  = sum(v for k,v in verd_agg.items() if k in ["65-70","70-75","75-80","80-85","85-90","90+"])
-                        jong_pdf = sum(v for k,v in verd_agg.items() if k in ["0-5","5-10","10-15","15-20","20-25"])
-                        nl_gem_pdf  = gem_leeftijd_fn(nl_verd)
-                        nl_oud_pdf  = sum(v for k,v in nl_verd.items() if k in ["65-70","70-75","75-80","80-85","85-90","90+"]) / nl_tot_p * 100 if nl_verd else None
-                        nl_jong_pdf = sum(v for k,v in nl_verd.items() if k in ["0-5","5-10","10-15","15-20","20-25"]) / nl_tot_p * 100 if nl_verd else None
-
-                        # Huishoudens
-                        tot_hh_pdf = hh_agg.get("__totaal", 1) or 1
-                        nl_tot_hh_pdf = nl_hh.get("__totaal", 1) or 1
-                        gem_gr_pdf = sum(d.get("__grootte",0)*d.get("__totaal",0) for d in hh_res.values() if d.get("__totaal",0)>0) / max(tot_hh_pdf,1)
-                        nl_gr_pdf  = nl_hh.get("__grootte", 0)
-                        pc_alone_pdf = hh_agg.get("Alleenstaand",0)/tot_hh_pdf*100
-                        pc_gezin_pdf = hh_agg.get("Gezin met kinderen",0)/tot_hh_pdf*100
-                        nl_alone_pdf = nl_hh.get("Alleenstaand",0)/nl_tot_hh_pdf*100 if nl_hh else None
-                        nl_gezin_pdf = nl_hh.get("Gezin met kinderen",0)/nl_tot_hh_pdf*100 if nl_hh else None
-
-                        # Herkomst
-                        nl_hk_key_pdf = hk_pc_map.get("Nederland")
-                        nl_hk_pdf = get_hk_data(nl_hk_key_pdf, hk_per_key, gb_totaal, gsl_key, hk_map_meta) if nl_hk_key_pdf else {}
-                        tot_hk_pdf  = hk_agg.get("Totaal",1) or 1
-                        nl_tot_hk_pdf = nl_hk_pdf.get("Totaal",1) or 1
-                        pct_nl_geb_pdf = hk_agg.get("Nederland",0)/tot_hk_pdf*100
-                        pct_nl_nl_pdf  = nl_hk_pdf.get("Nederland",0)/nl_tot_hk_pdf*100 if nl_hk_pdf else None
-
-                        # Locatienaam ophalen
-                        _, loc_naam_pdf = get_gemeente_code(center_lat_pdf, center_lon_pdf)
-
-                        pdf_bytes = genereer_pdf_onepager(
-                            label=label,
-                            pcs_list=pcs_list,
-                            gebied=g_pdf,
-                            tot=tot_pdf,
-                            gem=gem_pdf,
-                            oud_pct=oud_pdf/tot_pdf*100,
-                            jong_pct=jong_pdf/tot_pdf*100,
-                            nl_gem=nl_gem_pdf,
-                            nl_oud_pct=nl_oud_pdf,
-                            nl_jong_pct=nl_jong_pdf,
-                            tot_hh=tot_hh_pdf,
-                            gem_grootte=gem_gr_pdf,
-                            pc_alone=pc_alone_pdf,
-                            pc_gezin=pc_gezin_pdf,
-                            nl_gem_grootte=nl_gr_pdf,
-                            nl_alone=nl_alone_pdf,
-                            nl_gezin=nl_gezin_pdf,
-                            pct_nl_gebied=pct_nl_geb_pdf,
-                            pct_nl_nl=pct_nl_nl_pdf,
-                            verd_agg=verd_agg,
-                            nl_verd=nl_verd,
-                            hh_agg=hh_agg,
-                            nl_hh=nl_hh,
-                            hk_agg=hk_agg,
-                            nl_hk=nl_hk_pdf,
-                            locatie_naam=loc_naam_pdf or "",
-                        )
-                        bestandsnaam_pdf = f"catchment_{(loc_naam_pdf or label).replace(' ','_').replace('/','')}.pdf"
-                        st.download_button(
-                            label="⬇️ Download PDF",
-                            data=pdf_bytes,
-                            file_name=bestandsnaam_pdf,
-                            mime="application/pdf",
-                            use_container_width=True,
-                        )
-                    except Exception as e:
-                        st.error(f"PDF genereren mislukt: {e}")
-
             if st.button("📊 Download als Excel", type="secondary", use_container_width=True):
                 import io
                 import openpyxl
@@ -1838,6 +1824,73 @@ with col_result:
                 buf.seek(0)
 
                 bestandsnaam = f"catchment_{label.replace(' ','_').replace('/','').replace('⌀','').replace(',','')}.xlsx"
+
+                # ── PDF one-pager ──────────────────────────────────────
+                if st.button("📄 Genereer PDF one-pager", type="primary", use_container_width=True):
+                    with st.spinner("PDF wordt gemaakt..."):
+                        try:
+                            gs = st.session_state
+                            # Bevolkingsdata
+                            _tot      = gs.get("totaal_inwoners", 0)
+                            _gem      = gs.get("gem_leeftijd", 0)
+                            _jong_pct = gs.get("jong_pct", 0)
+                            _oud_pct  = gs.get("oud_pct", 0)
+                            _nl_gem   = gs.get("nl_gem_leeftijd", 38.0)
+                            _nl_jong  = gs.get("nl_jong_pct", 29.0)
+                            _nl_oud   = gs.get("nl_oud_pct", 20.0)
+                            # Huishoudens
+                            _tot_hh      = gs.get("totaal_hh", 0)
+                            _gem_grootte = gs.get("gem_hh_grootte", 0)
+                            _pc_alone    = gs.get("pct_alleenstaand", 0)
+                            _pc_gezin    = gs.get("pct_gezin", 0)
+                            _nl_grootte  = gs.get("nl_gem_grootte", 2.2)
+                            _nl_alone    = gs.get("nl_pct_alone", 40.3)
+                            _nl_gezin    = gs.get("nl_pct_gezin", 31.4)
+                            # Herkomst
+                            _pct_nl_g  = gs.get("pct_nl_herkomst", 0)
+                            _pct_nl_nl = gs.get("nl_pct_nl_herkomst", 76.2)
+                            # Verdelingen
+                            _verd_agg = gs.get("leeftijd_verd", {})
+                            _nl_verd  = gs.get("nl_leeftijd_verd", {})
+                            _hh_agg   = gs.get("hh_type_verd", {})
+                            _nl_hh    = gs.get("nl_hh_type_verd", {})
+                            _hk_agg   = gs.get("hk_verd", {})
+                            _nl_hk    = gs.get("nl_hk_verd", {})
+                            # Locatie
+                            _pcs      = gs.get("selected_postcodes", [])
+                            _gebied   = gs.get("selected_gebied", None)
+                            _loc_naam = gs.get("gemeente_naam", label)
+
+                            pdf_bytes = genereer_pdf_onepager(
+                                label=label,
+                                pcs_list=_pcs,
+                                gebied=_gebied,
+                                tot=_tot, gem=_gem,
+                                oud_pct=_oud_pct, jong_pct=_jong_pct,
+                                nl_gem=_nl_gem, nl_oud_pct=_nl_oud, nl_jong_pct=_nl_jong,
+                                tot_hh=_tot_hh, gem_grootte=_gem_grootte,
+                                pc_alone=_pc_alone, pc_gezin=_pc_gezin,
+                                nl_gem_grootte=_nl_grootte,
+                                nl_alone=_nl_alone, nl_gezin=_nl_gezin,
+                                pct_nl_gebied=_pct_nl_g, pct_nl_nl=_pct_nl_nl,
+                                verd_agg=_verd_agg, nl_verd=_nl_verd,
+                                hh_agg=_hh_agg,   nl_hh=_nl_hh,
+                                hk_agg=_hk_agg,   nl_hk=_nl_hk,
+                                locatie_naam=_loc_naam,
+                            )
+                            pc_str_fn = "_".join(_pcs[:3]) if _pcs else "gebied"
+                            bestandsnaam_pdf = f"catchment_{_loc_naam}_{pc_str_fn}.pdf"
+                            st.download_button(
+                                label="⬇️ Download PDF",
+                                data=pdf_bytes,
+                                file_name=bestandsnaam_pdf,
+                                mime="application/pdf",
+                                use_container_width=True,
+                            )
+                        except Exception as e:
+                            st.error(f"PDF genereren mislukt: {e}")
+
+
                 st.download_button(
                     label="⬇️ Download Excel",
                     data=buf.getvalue(),
