@@ -203,10 +203,70 @@ def genereer_pdf_onepager(
     gap_c        = 4 * mm
 
     charts = [
-        ("Leeftijdsverdeling", verd_agg, nl_verd),
-        ("Huishoudentype",     hh_agg,   nl_hh),
-        ("Herkomst",           hk_agg,   nl_hk),
+        ("Huishoudentype", hh_agg, nl_hh),
+        ("Herkomst",       hk_agg, nl_hk),
     ]
+
+    def afwijkingsgrafiek(c, x, y, w, h, verd_g, verd_nl):
+        """Leeftijdsverdeling als horizontale delta-staven (Δ vs NL)."""
+        if not verd_g or not verd_nl:
+            return
+        VOLGORDE = ["0-5","5-10","10-15","15-20","20-25","25-30","30-35",
+                    "35-40","40-45","45-50","50-55","55-60","60-65","65-70",
+                    "70-75","75-80","80-85","85-90","90+"]
+        cats = [k for k in VOLGORDE if k in verd_g or k in verd_nl]
+        n    = len(cats)
+
+        # titel
+        c.setFillColor(DONKER); c.setFont("Helvetica-Bold", 7.5)
+        c.drawString(x, y - 5*mm, "Leeftijdsverdeling (Δ vs NL)")
+
+        # legenda
+        leg_y = y - 9.5*mm
+        c.setFillColor(GROEN); c.rect(x, leg_y, 3.5*mm, 2.5*mm, fill=1, stroke=0)
+        c.setFillColor(DONKER); c.setFont("Helvetica", 5.5)
+        c.drawString(x + 4.5*mm, leg_y + 0.3*mm, "▲ meer dan NL")
+        c.setFillColor(PAARS); c.rect(x + 22*mm, leg_y, 3.5*mm, 2.5*mm, fill=1, stroke=0)
+        c.setFillColor(DONKER)
+        c.drawString(x + 27*mm, leg_y + 0.3*mm, "▼ minder")
+
+        top_y    = y - 13*mm
+        bar_h    = (h - 14*mm) / max(n, 1) * 0.65
+        bar_h    = min(bar_h, 3.8*mm)
+        row_step = (h - 14*mm) / max(n, 1)
+        label_w  = 12*mm
+        mid_x    = x + label_w + (w - label_w) / 2   # nulpunt in midden
+        half_w   = (w - label_w - 4*mm) / 2
+
+        deltas = {k: (verd_g.get(k,0) or 0) - (verd_nl.get(k,0) or 0) for k in cats}
+        max_abs = max((abs(v) for v in deltas.values()), default=1) or 1
+        scale   = half_w / max_abs
+
+        # nul-lijn
+        c.setStrokeColor(GRIJS); c.setLineWidth(0.4)
+        c.line(mid_x, top_y, mid_x, top_y - n * row_step)
+
+        for i, cat in enumerate(cats):
+            row_y = top_y - i * row_step - row_step * 0.15
+            delta = deltas[cat]
+            bw    = abs(delta) * scale
+
+            # cat label (links)
+            c.setFillColor(DONKER); c.setFont("Helvetica", 5.2)
+            c.drawRightString(x + label_w - 1*mm, row_y - bar_h * 0.4, cat)
+
+            if delta >= 0:
+                c.setFillColor(GROEN)
+                c.rect(mid_x, row_y - bar_h, bw, bar_h, fill=1, stroke=0)
+                if bw > 3*mm:
+                    c.setFillColor(DONKER); c.setFont("Helvetica", 4.8)
+                    c.drawString(mid_x + bw + 0.5*mm, row_y - bar_h + 0.3*mm, f"+{delta:.1f}")
+            else:
+                c.setFillColor(PAARS)
+                c.rect(mid_x - bw, row_y - bar_h, bw, bar_h, fill=1, stroke=0)
+                if bw > 3*mm:
+                    c.setFillColor(DONKER); c.setFont("Helvetica", 4.8)
+                    c.drawRightString(mid_x - bw - 0.5*mm, row_y - bar_h + 0.3*mm, f"{delta:.1f}")
 
     def staafdiagram(c, x, y, w, h, titel, gebied_d, nl_d):
         """
@@ -277,9 +337,13 @@ def genereer_pdf_onepager(
             c.setFont("Helvetica", 5.5)
             c.drawString(bx + bw2 + 1*mm, row_y2 + 0.5*mm, f"{nl_val:.0f}%")
 
+    # Leeftijdsafwijking links (iets breder), HH + Herkomst rechts
+    lft_w = chart_w * 1.1
+    rest_w = (chart_area_w - lft_w - 2 * gap_c) / 2
+    afwijkingsgrafiek(c, marg, cursor, lft_w, chart_h, verd_agg, nl_verd)
     for i, (ttl, gd, nd) in enumerate(charts):
-        cx_ = marg + i * (chart_w + gap_c)
-        staafdiagram(c, cx_, cursor, chart_w, chart_h, ttl, gd, nd)
+        cx_ = marg + lft_w + gap_c + i * (rest_w + gap_c)
+        staafdiagram(c, cx_, cursor, rest_w, chart_h, ttl, gd, nd)
 
     cursor -= chart_h + 3 * mm
 
