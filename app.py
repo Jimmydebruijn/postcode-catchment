@@ -27,6 +27,7 @@ def genereer_pdf_onepager(
     hh_agg, nl_hh,
     hk_agg, nl_hk,
     locatie_naam="",
+    filialen=None,   # lijst van dicts {merk, nummer, stad, adres, lat, lon}
 ):
     import io, math
     from datetime import date
@@ -53,18 +54,29 @@ def genereer_pdf_onepager(
     c   = rl_canvas.Canvas(buf, pagesize=A4)
 
     # ── header ───────────────────────────────────────────────
-    hdr_h = 22 * mm
+    hdr_h = 27 * mm   # iets hoger voor filialenregel
     c.setFillColor(DONKER)
     c.rect(0, H - hdr_h, W, hdr_h, fill=1, stroke=0)
     c.setFillColor(WIT)
     c.setFont("Helvetica-Bold", 14)
     titel = f"Catchment Area — {locatie_naam}"
-    c.drawString(marg, H - 14 * mm, titel)
+    c.drawString(marg, H - 10 * mm, titel)
     c.setFont("Helvetica", 8)
     pc_str = ", ".join(pcs_list[:8]) + ("…" if len(pcs_list) > 8 else "")
-    c.drawString(marg, H - 20 * mm, pc_str)
+    c.drawString(marg, H - 16 * mm, pc_str)
+    # Filialenregel
+    if filialen:
+        fil_parts = []
+        for f in filialen[:6]:
+            fil_parts.append(f"{f.get('merk','')} #{f.get('nummer','')} — {f.get('adres','')}, {f.get('stad','')}")
+        fil_str = " | ".join(fil_parts)
+        c.setFont("Helvetica", 6.5)
+        # Afkappen als te lang
+        while c.stringWidth(fil_str, "Helvetica", 6.5) > W - 2*marg - 30*mm and " | " in fil_str:
+            fil_str = fil_str.rsplit(" | ", 1)[0] + " | …"
+        c.drawString(marg, H - 22 * mm, f"Filialen in catchment: {fil_str}")
     c.setFont("Helvetica", 7)
-    c.drawRightString(W - marg, H - 18 * mm, f"Gegenereerd: {date.today().strftime('%d-%m-%Y')}")
+    c.drawRightString(W - marg, H - 10 * mm, f"Gegenereerd: {date.today().strftime('%d-%m-%Y')}")
 
     cursor = H - hdr_h - 4 * mm   # lopende y-positie (top-down)
 
@@ -80,7 +92,6 @@ def genereer_pdf_onepager(
 
         g_type = gebied.get("type", "") if gebied else ""
         if gebied and g_type in ("cirkel", "circle"):
-            # cirkel: middelpunt in lat/lon
             cy   = gebied.get("lat") or (gebied.get("center",[0,0])[0])
             cx   = gebied.get("lon") or (gebied.get("center",[0,0])[1])
             r_m  = gebied.get("straal") or gebied.get("radius", 1000)
@@ -93,14 +104,20 @@ def genereer_pdf_onepager(
                 pts.append((cx + dx * math.cos(ang), cy + dy * math.sin(ang)))
             sm.add_line(Line(pts, "#1D9E75", 3))
         elif gebied and g_type in ("polygoon", "polygon"):
-            # polygoon: coords is lijst van [lon, lat]
             raw = gebied.get("coords") or gebied.get("coordinates", [])
             if raw and isinstance(raw[0], (list, tuple)):
-                coords = [(c[0], c[1]) for c in raw]   # (lon, lat) voor staticmap
+                coords = [(c[0], c[1]) for c in raw]
             else:
                 coords = raw
             if coords:
                 sm.add_line(Line(coords + [coords[0]], "#1D9E75", 3))
+
+        # Filialen als gekleurde stippen op de kaart
+        if filialen:
+            for fil in filialen:
+                kleur = "#c8102e" if fil.get("merk","").lower() == "kruidvat" else "#185FA5"
+                sm.add_marker(CircleMarker((fil["lon"], fil["lat"]), kleur, 14))
+                sm.add_marker(CircleMarker((fil["lon"], fil["lat"]), "white", 6))
 
         img_obj = sm.render()
         tmp_path = tempfile.mktemp(suffix=".png")
@@ -1757,6 +1774,31 @@ with col_result:
                                     _, _loc_naam = get_gemeente_code(_clat, _clon)
                                 except Exception:
                                     _loc_naam = d.get("pcs", [""])[0] or "Gebied"
+
+                            # Filialen die binnen het catchment gebied vallen
+                            _filialen_in_gebied = []
+                            _gebied_obj = d.get("gebied")
+                            for _w in WINKELS_KRUIDVAT + WINKELS_TREKPLEISTER:
+                                if not _gebied_obj:
+                                    break
+                                _in = False
+                                _gt = _gebied_obj.get("type","")
+                                if _gt == "cirkel":
+                                    from math import radians, cos, sin, sqrt, atan2
+                                    _in = haversine(_gebied_obj["lat"], _gebied_obj["lon"], _w["lat"], _w["lon"]) <= _gebied_obj["straal"]
+                                elif _gt == "polygoon":
+                                    _in = punt_in_polygoon(_w["lat"], _w["lon"], _gebied_obj["coords"])
+                                if _in:
+                                    _merk = "Kruidvat" if _w in WINKELS_KRUIDVAT else "Trekpleister"
+                                    _filialen_in_gebied.append({
+                                        "merk": _merk,
+                                        "nummer": _w["s"],
+                                        "stad": _w["c"].title(),
+                                        "adres": f"{_w['a'].title()}, {_w['p']}",
+                                        "lat": _w["lat"],
+                                        "lon": _w["lon"],
+                                    })
+
                             pdf_bytes = genereer_pdf_onepager(
                                 label=label,
                                 pcs_list=d.get("pcs", []),
@@ -1782,6 +1824,7 @@ with col_result:
                                 hk_agg=d.get("hk_agg", {}),
                                 nl_hk=d.get("nl_hk", {}),
                                 locatie_naam=_loc_naam,
+                                filialen=_filialen_in_gebied or None,
                             )
                             _pcs = d.get("pcs", [])
                             _loc = _loc_naam
