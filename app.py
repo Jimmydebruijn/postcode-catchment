@@ -1193,6 +1193,61 @@ with col_result:
             hh_agg   = combineer(list(hh_res.values()))
             hk_agg   = combineer(list(hk_res.values()))
 
+            # ── Sla data op voor PDF-export ──────────────────────────────────
+            _tot_ss  = sum(verd_agg.values())
+            _gem_ss  = gem_leeftijd_fn(verd_agg)
+            _nl_tot  = sum(nl_verd.values()) or 1
+            _nl_gem_ss = gem_leeftijd_fn(nl_verd)
+            _oud_keys  = ["65-70","70-75","75-80","80-85","85-90","90+"]
+            _jong_keys = ["0-5","5-10","10-15","15-20","20-25"]
+            _oud_ss  = sum(v for k,v in verd_agg.items() if k in _oud_keys)
+            _jong_ss = sum(v for k,v in verd_agg.items() if k in _jong_keys)
+            _nl_oud_ss  = sum(v for k,v in nl_verd.items() if k in _oud_keys)
+            _nl_jong_ss = sum(v for k,v in nl_verd.items() if k in _jong_keys)
+            # hh
+            _tot_hh_ss = hh_agg.get("__totaal",1) or 1
+            _nl_tot_hh_ss = nl_hh.get("__totaal",1) or 1
+            _gem_gr_ss = sum(
+                d.get("__grootte",0)*d.get("__totaal",0)
+                for d in hh_res.values() if d.get("__totaal",0)>0
+            ) / max(_tot_hh_ss,1)
+            _nl_gr_ss  = nl_hh.get("__grootte",0)
+            _pc_alone_ss = hh_agg.get("Alleenstaand",0)/_tot_hh_ss*100
+            _nl_alone_ss = nl_hh.get("Alleenstaand",0)/_nl_tot_hh_ss*100 if nl_hh else 0
+            _pc_gezin_ss = hh_agg.get("Gezin met kinderen",0)/_tot_hh_ss*100
+            _nl_gezin_ss = nl_hh.get("Gezin met kinderen",0)/_nl_tot_hh_ss*100 if nl_hh else 0
+            # hk — Nederland benchmark ophalen
+            _nl_hk_key = hk_pc_map.get("Nederland")
+            _nl_hk_ss  = get_hk_data(_nl_hk_key, hk_per_key, gb_totaal, gsl_key, hk_map_meta) if _nl_hk_key else {}
+            _tot_hk_ss   = hk_agg.get("Totaal",1) or 1
+            _nl_tot_hk_ss = _nl_hk_ss.get("Totaal",1) or 1
+            _pct_nl_g_ss  = hk_agg.get("Nederland",0)/_tot_hk_ss*100
+            _pct_nl_nl_ss = _nl_hk_ss.get("Nederland",0)/_nl_tot_hk_ss*100 if _nl_hk_ss else 76.2
+            # verdelingen als percentages voor PDF-staafdiagrammen
+            def _pct_d(d, totaal):
+                return {k: round(v/max(totaal,1)*100,1) for k,v in d.items() if not k.startswith("__")}
+            _hh_typen = ["Alleenstaand","Gezin met kinderen","Stel/meerp. zonder kinderen"]
+            _hk_cats  = ["Nederland","Europa","Turkije","Marokko","Suriname","Afrika","Amerika","Azië"]
+            st.session_state["_pdf_data"] = {
+                "tot": _tot_ss, "gem": _gem_ss,
+                "oud_pct": _oud_ss/max(_tot_ss,1)*100, "jong_pct": _jong_ss/max(_tot_ss,1)*100,
+                "nl_gem": _nl_gem_ss,
+                "nl_oud_pct": _nl_oud_ss/max(_nl_tot,1)*100, "nl_jong_pct": _nl_jong_ss/max(_nl_tot,1)*100,
+                "tot_hh": _tot_hh_ss, "gem_grootte": _gem_gr_ss,
+                "pc_alone": _pc_alone_ss, "pc_gezin": _pc_gezin_ss,
+                "nl_gem_grootte": _nl_gr_ss, "nl_alone": _nl_alone_ss, "nl_gezin": _nl_gezin_ss,
+                "pct_nl_gebied": _pct_nl_g_ss, "pct_nl_nl": _pct_nl_nl_ss,
+                "verd_agg":  _pct_d(verd_agg, _tot_ss),
+                "nl_verd":   _pct_d(nl_verd,  _nl_tot),
+                "hh_agg":    {t: round(hh_agg.get(t,0)/_tot_hh_ss*100,1) for t in _hh_typen},
+                "nl_hh":     {t: round(nl_hh.get(t,0)/_nl_tot_hh_ss*100,1) for t in _hh_typen} if nl_hh else {},
+                "hk_agg":    {c: round(hk_agg.get(c,0)/_tot_hk_ss*100,1) for c in _hk_cats},
+                "nl_hk":     {c: round(_nl_hk_ss.get(c,0)/_nl_tot_hk_ss*100,1) for c in _hk_cats} if _nl_hk_ss else {},
+                "pcs":       pcs_list,
+                "gebied":    st.session_state.get("selected_gebied"),
+                "loc_naam":  st.session_state.get("gemeente_naam", label),
+            }
+
             tab1, tab2, tab3, tab4, tab5 = st.tabs(["👥 Leeftijd", "🏠 Huishoudens", "🌍 Herkomst", "💶 Inkomen", "👫 Man/Vrouw"])
 
             with tab1:
@@ -1615,53 +1670,46 @@ with col_result:
             if st.button("📄 Genereer PDF one-pager", type="primary", use_container_width=True):
                 with st.spinner("PDF wordt gemaakt..."):
                     try:
-                        gs = st.session_state
-                        _tot      = gs.get("totaal_inwoners", 0)
-                        _gem      = gs.get("gem_leeftijd", 0)
-                        _jong_pct = gs.get("jong_pct", 0)
-                        _oud_pct  = gs.get("oud_pct", 0)
-                        _nl_gem   = gs.get("nl_gem_leeftijd", 38.0)
-                        _nl_jong  = gs.get("nl_jong_pct", 29.0)
-                        _nl_oud   = gs.get("nl_oud_pct", 20.0)
-                        _tot_hh      = gs.get("totaal_hh", 0)
-                        _gem_grootte = gs.get("gem_hh_grootte", 0)
-                        _pc_alone    = gs.get("pct_alleenstaand", 0)
-                        _pc_gezin    = gs.get("pct_gezin", 0)
-                        _nl_grootte  = gs.get("nl_gem_grootte", 2.2)
-                        _nl_alone    = gs.get("nl_pct_alone", 40.3)
-                        _nl_gezin    = gs.get("nl_pct_gezin", 31.4)
-                        _pct_nl_g  = gs.get("pct_nl_herkomst", 0)
-                        _pct_nl_nl = gs.get("nl_pct_nl_herkomst", 76.2)
-                        _verd_agg = gs.get("leeftijd_verd", {})
-                        _nl_verd  = gs.get("nl_leeftijd_verd", {})
-                        _hh_agg   = gs.get("hh_type_verd", {})
-                        _nl_hh    = gs.get("nl_hh_type_verd", {})
-                        _hk_agg   = gs.get("hk_verd", {})
-                        _nl_hk    = gs.get("nl_hk_verd", {})
-                        _pcs      = gs.get("selected_postcodes", [])
-                        _gebied   = gs.get("selected_gebied", None)
-                        _loc_naam = gs.get("gemeente_naam", label)
-                        pdf_bytes = genereer_pdf_onepager(
-                            label=label, pcs_list=_pcs, gebied=_gebied,
-                            tot=_tot, gem=_gem, oud_pct=_oud_pct, jong_pct=_jong_pct,
-                            nl_gem=_nl_gem, nl_oud_pct=_nl_oud, nl_jong_pct=_nl_jong,
-                            tot_hh=_tot_hh, gem_grootte=_gem_grootte,
-                            pc_alone=_pc_alone, pc_gezin=_pc_gezin,
-                            nl_gem_grootte=_nl_grootte, nl_alone=_nl_alone, nl_gezin=_nl_gezin,
-                            pct_nl_gebied=_pct_nl_g, pct_nl_nl=_pct_nl_nl,
-                            verd_agg=_verd_agg, nl_verd=_nl_verd,
-                            hh_agg=_hh_agg, nl_hh=_nl_hh,
-                            hk_agg=_hk_agg, nl_hk=_nl_hk,
-                            locatie_naam=_loc_naam,
-                        )
-                        pc_str_fn = "_".join(_pcs[:3]) if _pcs else "gebied"
-                        st.download_button(
-                            label="⬇️ Download PDF",
-                            data=pdf_bytes,
-                            file_name=f"catchment_{_loc_naam}_{pc_str_fn}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True,
-                        )
+                        d = st.session_state.get("_pdf_data", {})
+                        if not d:
+                            st.warning("Voer eerst een analyse uit.")
+                        else:
+                            pdf_bytes = genereer_pdf_onepager(
+                                label=label,
+                                pcs_list=d.get("pcs", []),
+                                gebied=d.get("gebied"),
+                                tot=d.get("tot", 0), gem=d.get("gem", 0),
+                                oud_pct=d.get("oud_pct", 0), jong_pct=d.get("jong_pct", 0),
+                                nl_gem=d.get("nl_gem", 38.0),
+                                nl_oud_pct=d.get("nl_oud_pct", 20.0),
+                                nl_jong_pct=d.get("nl_jong_pct", 29.0),
+                                tot_hh=d.get("tot_hh", 0),
+                                gem_grootte=d.get("gem_grootte", 0),
+                                pc_alone=d.get("pc_alone", 0),
+                                pc_gezin=d.get("pc_gezin", 0),
+                                nl_gem_grootte=d.get("nl_gem_grootte", 2.2),
+                                nl_alone=d.get("nl_alone", 40.3),
+                                nl_gezin=d.get("nl_gezin", 31.4),
+                                pct_nl_gebied=d.get("pct_nl_gebied", 0),
+                                pct_nl_nl=d.get("pct_nl_nl", 76.2),
+                                verd_agg=d.get("verd_agg", {}),
+                                nl_verd=d.get("nl_verd", {}),
+                                hh_agg=d.get("hh_agg", {}),
+                                nl_hh=d.get("nl_hh", {}),
+                                hk_agg=d.get("hk_agg", {}),
+                                nl_hk=d.get("nl_hk", {}),
+                                locatie_naam=d.get("loc_naam", label),
+                            )
+                            _pcs = d.get("pcs", [])
+                            _loc = d.get("loc_naam", label)
+                            pc_str_fn = "_".join(_pcs[:3]) if _pcs else "gebied"
+                            st.download_button(
+                                label="⬇️ Download PDF",
+                                data=pdf_bytes,
+                                file_name=f"catchment_{_loc}_{pc_str_fn}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                            )
                     except Exception as e:
                         st.error(f"PDF genereren mislukt: {e}")
 
