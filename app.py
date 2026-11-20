@@ -78,10 +78,13 @@ def genereer_pdf_onepager(
 
         sm = StaticMap(int(map_w * 2.83), int(map_h * 2.83), url_template="https://tile.openstreetmap.org/{z}/{x}/{y}.png")
 
-        if gebied and gebied.get("type") == "circle":
-            cx   = gebied["center"][1]
-            cy   = gebied["center"][0]
-            r_km = gebied["radius"] / 1000
+        g_type = gebied.get("type", "") if gebied else ""
+        if gebied and g_type in ("cirkel", "circle"):
+            # cirkel: middelpunt in lat/lon
+            cy   = gebied.get("lat") or (gebied.get("center",[0,0])[0])
+            cx   = gebied.get("lon") or (gebied.get("center",[0,0])[1])
+            r_m  = gebied.get("straal") or gebied.get("radius", 1000)
+            r_km = r_m / 1000
             pts  = []
             for i in range(73):
                 ang = math.radians(i * 5)
@@ -89,9 +92,15 @@ def genereer_pdf_onepager(
                 dy  = r_km / 110.574
                 pts.append((cx + dx * math.cos(ang), cy + dy * math.sin(ang)))
             sm.add_line(Line(pts, "#1D9E75", 3))
-        elif gebied and gebied.get("type") == "polygon":
-            coords = [(p[1], p[0]) for p in gebied["coordinates"]]
-            sm.add_line(Line(coords + [coords[0]], "#1D9E75", 3))
+        elif gebied and g_type in ("polygoon", "polygon"):
+            # polygoon: coords is lijst van [lon, lat]
+            raw = gebied.get("coords") or gebied.get("coordinates", [])
+            if raw and isinstance(raw[0], (list, tuple)):
+                coords = [(c[0], c[1]) for c in raw]   # (lon, lat) voor staticmap
+            else:
+                coords = raw
+            if coords:
+                sm.add_line(Line(coords + [coords[0]], "#1D9E75", 3))
 
         img_obj = sm.render()
         tmp_path = tempfile.mktemp(suffix=".png")
@@ -1244,8 +1253,8 @@ with col_result:
                 "hk_agg":    {c: round(hk_agg.get(c,0)/_tot_hk_ss*100,1) for c in _hk_cats},
                 "nl_hk":     {c: round(_nl_hk_ss.get(c,0)/_nl_tot_hk_ss*100,1) for c in _hk_cats} if _nl_hk_ss else {},
                 "pcs":       pcs_list,
-                "gebied":    st.session_state.get("selected_gebied"),
-                "loc_naam":  st.session_state.get("gemeente_naam", label),
+                "gebied":    st.session_state.gebied,   # bevat type/lat/lon/straal/coords
+                "loc_naam":  label,
             }
 
             tab1, tab2, tab3, tab4, tab5 = st.tabs(["👥 Leeftijd", "🏠 Huishoudens", "🌍 Herkomst", "💶 Inkomen", "👫 Man/Vrouw"])
@@ -1674,6 +1683,16 @@ with col_result:
                         if not d:
                             st.warning("Voer eerst een analyse uit.")
                         else:
+                            # Bepaal plaatsnaam via reverse geocode als label generiek is
+                            _loc_naam = d.get("loc_naam", label)
+                            _g = d.get("gebied")
+                            if _loc_naam in ("Getekend gebied", "", None) and _g:
+                                try:
+                                    _clat = _g.get("lat") or (sum(c[1] for c in _g["coords"])/len(_g["coords"]) if _g.get("coords") else 52.1)
+                                    _clon = _g.get("lon") or (sum(c[0] for c in _g["coords"])/len(_g["coords"]) if _g.get("coords") else 5.1)
+                                    _, _loc_naam = get_gemeente_code(_clat, _clon)
+                                except Exception:
+                                    _loc_naam = d.get("pcs", [""])[0] or "Gebied"
                             pdf_bytes = genereer_pdf_onepager(
                                 label=label,
                                 pcs_list=d.get("pcs", []),
@@ -1698,10 +1717,10 @@ with col_result:
                                 nl_hh=d.get("nl_hh", {}),
                                 hk_agg=d.get("hk_agg", {}),
                                 nl_hk=d.get("nl_hk", {}),
-                                locatie_naam=d.get("loc_naam", label),
+                                locatie_naam=_loc_naam,
                             )
                             _pcs = d.get("pcs", [])
-                            _loc = d.get("loc_naam", label)
+                            _loc = _loc_naam
                             pc_str_fn = "_".join(_pcs[:3]) if _pcs else "gebied"
                             st.download_button(
                                 label="⬇️ Download PDF",
