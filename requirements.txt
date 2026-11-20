@@ -5,3 +5,6 @@ plotly
 folium
 streamlit-folium
 openpyxl
+reportlab
+staticmap
+Pillow
