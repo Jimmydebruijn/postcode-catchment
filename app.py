@@ -1607,9 +1607,63 @@ with col_result:
                         )
                         st.plotly_chart(fig_pir, use_container_width=True)
 
-            # ── Excel export ────────────────────────────────────────────────
+            # ── Exporteren ──────────────────────────────────────────────────
             st.divider()
             st.subheader("📥 Exporteren")
+
+            # ── PDF one-pager knop (altijd zichtbaar na analyse) ────────────
+            if st.button("📄 Genereer PDF one-pager", type="primary", use_container_width=True):
+                with st.spinner("PDF wordt gemaakt..."):
+                    try:
+                        gs = st.session_state
+                        _tot      = gs.get("totaal_inwoners", 0)
+                        _gem      = gs.get("gem_leeftijd", 0)
+                        _jong_pct = gs.get("jong_pct", 0)
+                        _oud_pct  = gs.get("oud_pct", 0)
+                        _nl_gem   = gs.get("nl_gem_leeftijd", 38.0)
+                        _nl_jong  = gs.get("nl_jong_pct", 29.0)
+                        _nl_oud   = gs.get("nl_oud_pct", 20.0)
+                        _tot_hh      = gs.get("totaal_hh", 0)
+                        _gem_grootte = gs.get("gem_hh_grootte", 0)
+                        _pc_alone    = gs.get("pct_alleenstaand", 0)
+                        _pc_gezin    = gs.get("pct_gezin", 0)
+                        _nl_grootte  = gs.get("nl_gem_grootte", 2.2)
+                        _nl_alone    = gs.get("nl_pct_alone", 40.3)
+                        _nl_gezin    = gs.get("nl_pct_gezin", 31.4)
+                        _pct_nl_g  = gs.get("pct_nl_herkomst", 0)
+                        _pct_nl_nl = gs.get("nl_pct_nl_herkomst", 76.2)
+                        _verd_agg = gs.get("leeftijd_verd", {})
+                        _nl_verd  = gs.get("nl_leeftijd_verd", {})
+                        _hh_agg   = gs.get("hh_type_verd", {})
+                        _nl_hh    = gs.get("nl_hh_type_verd", {})
+                        _hk_agg   = gs.get("hk_verd", {})
+                        _nl_hk    = gs.get("nl_hk_verd", {})
+                        _pcs      = gs.get("selected_postcodes", [])
+                        _gebied   = gs.get("selected_gebied", None)
+                        _loc_naam = gs.get("gemeente_naam", label)
+                        pdf_bytes = genereer_pdf_onepager(
+                            label=label, pcs_list=_pcs, gebied=_gebied,
+                            tot=_tot, gem=_gem, oud_pct=_oud_pct, jong_pct=_jong_pct,
+                            nl_gem=_nl_gem, nl_oud_pct=_nl_oud, nl_jong_pct=_nl_jong,
+                            tot_hh=_tot_hh, gem_grootte=_gem_grootte,
+                            pc_alone=_pc_alone, pc_gezin=_pc_gezin,
+                            nl_gem_grootte=_nl_grootte, nl_alone=_nl_alone, nl_gezin=_nl_gezin,
+                            pct_nl_gebied=_pct_nl_g, pct_nl_nl=_pct_nl_nl,
+                            verd_agg=_verd_agg, nl_verd=_nl_verd,
+                            hh_agg=_hh_agg, nl_hh=_nl_hh,
+                            hk_agg=_hk_agg, nl_hk=_nl_hk,
+                            locatie_naam=_loc_naam,
+                        )
+                        pc_str_fn = "_".join(_pcs[:3]) if _pcs else "gebied"
+                        st.download_button(
+                            label="⬇️ Download PDF",
+                            data=pdf_bytes,
+                            file_name=f"catchment_{_loc_naam}_{pc_str_fn}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+                    except Exception as e:
+                        st.error(f"PDF genereren mislukt: {e}")
 
             if st.button("📊 Download als Excel", type="secondary", use_container_width=True):
                 import io
@@ -1824,72 +1878,6 @@ with col_result:
                 buf.seek(0)
 
                 bestandsnaam = f"catchment_{label.replace(' ','_').replace('/','').replace('⌀','').replace(',','')}.xlsx"
-
-                # ── PDF one-pager ──────────────────────────────────────
-                if st.button("📄 Genereer PDF one-pager", type="primary", use_container_width=True):
-                    with st.spinner("PDF wordt gemaakt..."):
-                        try:
-                            gs = st.session_state
-                            # Bevolkingsdata
-                            _tot      = gs.get("totaal_inwoners", 0)
-                            _gem      = gs.get("gem_leeftijd", 0)
-                            _jong_pct = gs.get("jong_pct", 0)
-                            _oud_pct  = gs.get("oud_pct", 0)
-                            _nl_gem   = gs.get("nl_gem_leeftijd", 38.0)
-                            _nl_jong  = gs.get("nl_jong_pct", 29.0)
-                            _nl_oud   = gs.get("nl_oud_pct", 20.0)
-                            # Huishoudens
-                            _tot_hh      = gs.get("totaal_hh", 0)
-                            _gem_grootte = gs.get("gem_hh_grootte", 0)
-                            _pc_alone    = gs.get("pct_alleenstaand", 0)
-                            _pc_gezin    = gs.get("pct_gezin", 0)
-                            _nl_grootte  = gs.get("nl_gem_grootte", 2.2)
-                            _nl_alone    = gs.get("nl_pct_alone", 40.3)
-                            _nl_gezin    = gs.get("nl_pct_gezin", 31.4)
-                            # Herkomst
-                            _pct_nl_g  = gs.get("pct_nl_herkomst", 0)
-                            _pct_nl_nl = gs.get("nl_pct_nl_herkomst", 76.2)
-                            # Verdelingen
-                            _verd_agg = gs.get("leeftijd_verd", {})
-                            _nl_verd  = gs.get("nl_leeftijd_verd", {})
-                            _hh_agg   = gs.get("hh_type_verd", {})
-                            _nl_hh    = gs.get("nl_hh_type_verd", {})
-                            _hk_agg   = gs.get("hk_verd", {})
-                            _nl_hk    = gs.get("nl_hk_verd", {})
-                            # Locatie
-                            _pcs      = gs.get("selected_postcodes", [])
-                            _gebied   = gs.get("selected_gebied", None)
-                            _loc_naam = gs.get("gemeente_naam", label)
-
-                            pdf_bytes = genereer_pdf_onepager(
-                                label=label,
-                                pcs_list=_pcs,
-                                gebied=_gebied,
-                                tot=_tot, gem=_gem,
-                                oud_pct=_oud_pct, jong_pct=_jong_pct,
-                                nl_gem=_nl_gem, nl_oud_pct=_nl_oud, nl_jong_pct=_nl_jong,
-                                tot_hh=_tot_hh, gem_grootte=_gem_grootte,
-                                pc_alone=_pc_alone, pc_gezin=_pc_gezin,
-                                nl_gem_grootte=_nl_grootte,
-                                nl_alone=_nl_alone, nl_gezin=_nl_gezin,
-                                pct_nl_gebied=_pct_nl_g, pct_nl_nl=_pct_nl_nl,
-                                verd_agg=_verd_agg, nl_verd=_nl_verd,
-                                hh_agg=_hh_agg,   nl_hh=_nl_hh,
-                                hk_agg=_hk_agg,   nl_hk=_nl_hk,
-                                locatie_naam=_loc_naam,
-                            )
-                            pc_str_fn = "_".join(_pcs[:3]) if _pcs else "gebied"
-                            bestandsnaam_pdf = f"catchment_{_loc_naam}_{pc_str_fn}.pdf"
-                            st.download_button(
-                                label="⬇️ Download PDF",
-                                data=pdf_bytes,
-                                file_name=bestandsnaam_pdf,
-                                mime="application/pdf",
-                                use_container_width=True,
-                            )
-                        except Exception as e:
-                            st.error(f"PDF genereren mislukt: {e}")
-
 
                 st.download_button(
                     label="⬇️ Download Excel",
